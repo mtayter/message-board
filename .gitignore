@@ -1,0 +1,6 @@
+*.tmp
+# local board data — never commit (created by server.py / add_user.py)
+messages.json
+users.json
+tokens.json
+__pycache__/
