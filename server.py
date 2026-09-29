@@ -284,7 +284,7 @@ async function api(method,path,data){
 function esc(s){return String(s).replace(/[&<>"']/g,function(c){
   return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
 async function load(){
-  const d=await api('GET','/messages');
+  const d=await api('GET','messages');
   const box=document.getElementById('inbox');
   if(!d.messages.length){box.innerHTML='<p><i>No messages yet.</i></p>';return;}
   box.innerHTML=d.messages.map(function(m){
@@ -296,7 +296,7 @@ document.getElementById('go').onclick=async function(){
   const u=document.getElementById('u').value.trim(), p=document.getElementById('p').value;
   auth='Basic '+btoa(u+':'+p);
   try{
-    const d=await api('GET','/me');
+    const d=await api('GET','me');
     document.getElementById('me').textContent=d.username;
     document.getElementById('login').hidden=true;
     document.getElementById('app').hidden=false;
@@ -309,7 +309,7 @@ document.getElementById('refresh').onclick=function(){load().catch(function(e){a
 document.getElementById('send').onclick=async function(){
   const to=document.getElementById('to').value.trim(), body=document.getElementById('body').value;
   try{
-    const d=await api('POST','/messages',{to:to,body:body});
+    const d=await api('POST','messages',{to:to,body:body});
     document.getElementById('sent').textContent='Sent as #'+d.id+'.';
     document.getElementById('body').value='';
   }catch(e){ document.getElementById('sent').textContent='Failed: '+e.message; }
