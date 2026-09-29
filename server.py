@@ -15,7 +15,8 @@ Protocol:
     POST /messages                    {"to","body"} -> {"id","timestamp"}   ("from" is you)
     GET  /messages?to=<you>&since=<id> -> {"messages":[...], "latest":<id>} (your inbox)
     GET  /messages?box=sent&since=<id>  -> messages you sent
-    GET  /me                           -> {"username": ...}
+    GET  /messages?box=all&since=<id>   -> every message (admin users only)
+    GET  /me                           -> {"username": ..., "admin": true/false}
     GET  /                             human-readable inbox page (HTML, sign in first)
 
 Auth:  Authorization: Basic base64("user:password")   or   Authorization: Bearer <token>
@@ -139,6 +140,9 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return None
 
+    def _is_admin(self, username):
+        return bool(load_json(USERS_FILE, {}).get(username, {}).get("admin"))
+
     def _require_auth(self):
         user = self._auth_user()
         if user is None:
@@ -169,7 +173,8 @@ class Handler(BaseHTTPRequestHandler):
             user = self._require_auth()
             if user is None:
                 return
-            return self._send_json(200, {"username": user})
+            return self._send_json(200, {"username": user,
+                                         "admin": self._is_admin(user)})
 
         if parsed.path == "/messages":
             user = self._require_auth()
@@ -180,18 +185,23 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 return self._send_json(400, {"error": "since must be an integer id"})
             box = query.get("box", ["inbox"])[0]
-            if box not in ("inbox", "sent"):
-                return self._send_json(400, {"error": 'box must be "inbox" or "sent"'})
-            to = query.get("to", [user])[0]
-            if to != user:
-                # You may only read your own inbox; ?to= stays in the protocol
-                # so clients can name their own inbox explicitly.
-                return self._send_json(403, {"error": "you can only read your own inbox"})
+            if box not in ("inbox", "sent", "all"):
+                return self._send_json(400, {"error": 'box must be "inbox", "sent" or "all"'})
             messages = load_json(MESSAGES_FILE, [])
-            if box == "sent":
-                out = [m for m in messages if m["from"] == user and m["id"] > since]
+            if box == "all":
+                if not self._is_admin(user):
+                    return self._send_json(403, {"error": "admin only"})
+                out = [m for m in messages if m["id"] > since]
             else:
-                out = [m for m in messages if m["to"] == user and m["id"] > since]
+                to = query.get("to", [user])[0]
+                if to != user:
+                    # You may only read your own inbox; ?to= stays in the protocol
+                    # so clients can name their own inbox explicitly.
+                    return self._send_json(403, {"error": "you can only read your own inbox"})
+                if box == "sent":
+                    out = [m for m in messages if m["from"] == user and m["id"] > since]
+                else:
+                    out = [m for m in messages if m["to"] == user and m["id"] > since]
             out.sort(key=lambda m: m["id"])
             latest = max((m["id"] for m in messages), default=0)
             return self._send_json(200, {"messages": out, "latest": latest})
@@ -268,6 +278,9 @@ input{font:inherit}
 <p>Signed in as <b id="me"></b>
 <button id="refresh">Refresh</button> <button id="out">Sign out</button></p>
 <h2>Inbox</h2><div id="inbox"><p><i>loading&hellip;</i></p></div>
+<div id="adminsec" hidden>
+<h2>All messages (admin)</h2><div id="allbox"><p><i>loading&hellip;</i></p></div>
+</div>
 <h2>Send a message</h2>
 <p>To: <input id="to" placeholder="recipient username"></p>
 <p><textarea id="body" placeholder="message body"></textarea></p>
@@ -292,6 +305,15 @@ async function load(){
       '</b> &middot; '+new Date(m.timestamp*1000).toLocaleString()+'</div><div>'+esc(m.body)+'</div></div>';
   }).join('');
 }
+async function loadAll(){
+  const d=await api('GET','messages?box=all');
+  const box=document.getElementById('allbox');
+  if(!d.messages.length){box.innerHTML='<p><i>No messages yet.</i></p>';return;}
+  box.innerHTML=d.messages.map(function(m){
+    return '<div class="msg"><div class="meta">#'+m.id+' &middot; <b>'+esc(m.from)+'</b> &rarr; <b>'+
+      esc(m.to)+'</b> &middot; '+new Date(m.timestamp*1000).toLocaleString()+'</div><div>'+esc(m.body)+'</div></div>';
+  }).join('');
+}
 document.getElementById('go').onclick=async function(){
   const u=document.getElementById('u').value.trim(), p=document.getElementById('p').value;
   auth='Basic '+btoa(u+':'+p);
@@ -302,6 +324,11 @@ document.getElementById('go').onclick=async function(){
     document.getElementById('app').hidden=false;
     document.getElementById('err').textContent='';
     await load(); setInterval(load,15000);
+    if(d.admin){
+      document.getElementById('adminsec').hidden=false;
+      loadAll().catch(function(){});
+      setInterval(function(){loadAll().catch(function(){});},15000);
+    }
   }catch(e){ document.getElementById('err').textContent='Sign-in failed.'; auth=null; }
 };
 document.getElementById('out').onclick=function(){location.reload();};
