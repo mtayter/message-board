@@ -17,6 +17,7 @@ Protocol:
     GET  /messages?box=sent&since=<id>  -> messages you sent
     GET  /messages?box=all&since=<id>   -> every message (admin users only)
     GET  /me                           -> {"username": ..., "admin": true/false}
+    GET  /users                        -> {"users": [...]} (all usernames)
     GET  /                             human-readable inbox page (HTML, sign in first)
 
 Auth:  Authorization: Basic base64("user:password")   or   Authorization: Bearer <token>
@@ -176,6 +177,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(200, {"username": user,
                                          "admin": self._is_admin(user)})
 
+        if parsed.path == "/users":
+            user = self._require_auth()
+            if user is None:
+                return
+            return self._send_json(200, {"users": sorted(load_json(USERS_FILE, {}).keys())})
+
         if parsed.path == "/messages":
             user = self._require_auth()
             if user is None:
@@ -282,7 +289,7 @@ input{font:inherit}
 <h2>All messages (admin)</h2><div id="allbox"><p><i>loading&hellip;</i></p></div>
 </div>
 <h2>Send a message</h2>
-<p>To: <input id="to" placeholder="recipient username"></p>
+<p>To: <select id="to"></select></p>
 <p><textarea id="body" placeholder="message body"></textarea></p>
 <p><button id="send">Send</button> <span id="sent"></span></p>
 </div>
@@ -324,6 +331,13 @@ document.getElementById('go').onclick=async function(){
     document.getElementById('app').hidden=false;
     document.getElementById('err').textContent='';
     await load(); setInterval(load,15000);
+    const ul=await api('GET','users');
+    const sel=document.getElementById('to');
+    ul.users.filter(function(x){return x!==d.username;}).forEach(function(x){
+      const o=document.createElement('option');
+      o.value=x; o.textContent=x;
+      sel.appendChild(o);
+    });
     if(d.admin){
       document.getElementById('adminsec').hidden=false;
       loadAll().catch(function(){});
