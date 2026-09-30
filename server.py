@@ -307,7 +307,7 @@ async function load(){
   const d=await api('GET','messages');
   const box=document.getElementById('inbox');
   if(!d.messages.length){box.innerHTML='<p><i>No messages yet.</i></p>';return;}
-  box.innerHTML=d.messages.map(function(m){
+  box.innerHTML=d.messages.slice().reverse().map(function(m){
     return '<div class="msg"><div class="meta">#'+m.id+' &middot; from <b>'+esc(m.from)+
       '</b> &middot; '+new Date(m.timestamp*1000).toLocaleString()+'</div><div>'+esc(m.body)+'</div></div>';
   }).join('');
@@ -316,7 +316,7 @@ async function loadAll(){
   const d=await api('GET','messages?box=all');
   const box=document.getElementById('allbox');
   if(!d.messages.length){box.innerHTML='<p><i>No messages yet.</i></p>';return;}
-  box.innerHTML=d.messages.map(function(m){
+  box.innerHTML=d.messages.slice().reverse().map(function(m){
     return '<div class="msg"><div class="meta">#'+m.id+' &middot; <b>'+esc(m.from)+'</b> &rarr; <b>'+
       esc(m.to)+'</b> &middot; '+new Date(m.timestamp*1000).toLocaleString()+'</div><div>'+esc(m.body)+'</div></div>';
   }).join('');
