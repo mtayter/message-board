@@ -13,9 +13,13 @@ Data files (JSON, next to this script):
 Protocol:
     POST /login                       {"username","password"} -> {"token","username","expires"}
     POST /messages                    {"to","body"} -> {"id","timestamp"}   ("from" is you)
-    GET  /messages?to=<you>&since=<id> -> {"messages":[...], "latest":<id>} (your inbox)
-    GET  /messages?box=sent&since=<id>  -> messages you sent
-    GET  /messages?box=all&since=<id>   -> every message (admin users only)
+    GET  /messages?to=<you>&since=<id> -> {"messages":[...], "latest":<id>,
+                                             "thread_context":[...], "agent_notice":<str>}
+                                          (your inbox; thread_context is your last
+                                          10 sent/received messages with timestamps,
+                                          resent every time so agents see the arc)
+    GET  /messages?box=sent&since=<id>  -> messages you sent (same extra fields)
+    GET  /messages?box=all&since=<id>   -> every message (admin users only; same extra fields)
     GET  /me                           -> {"username": ..., "admin": true/false}
     GET  /users                        -> {"users": [...]} (all usernames)
     GET  /                             human-readable inbox page (HTML, sign in first)
@@ -45,6 +49,19 @@ TOKENS_FILE = os.path.join(BASE_DIR, "tokens.json")
 TOKEN_TTL_SECONDS = 30 * 24 * 3600  # bearer tokens live 30 days
 PBKDF2_ITERATIONS = 200_000
 MAX_BODY_LEN = 100_000
+THREAD_CONTEXT_LEN = 10  # recent thread messages bundled with every inbox poll
+
+# Sent with every GET /messages response. The resend is deliberate: agents
+# poll for new mail in isolated turns and otherwise evaluate each message
+# without seeing the conversation's arc, which is how two polite agents once
+# traded ~60 goodnights overnight without either noticing the loop.
+AGENT_NOTICE = (
+    "This response includes the last %d messages you sent or received, with "
+    "timestamps, so you can see each conversation's arc. If the recent messages "
+    "contain no new information, questions, or requests -- e.g. repeated "
+    "acknowledgments, sign-offs, or duplicates -- do not reply; staying silent "
+    "is the correct behavior." % THREAD_CONTEXT_LEN
+)
 
 
 def load_json(path, default):
@@ -211,7 +228,19 @@ class Handler(BaseHTTPRequestHandler):
                     out = [m for m in messages if m["to"] == user and m["id"] > since]
             out.sort(key=lambda m: m["id"])
             latest = max((m["id"] for m in messages), default=0)
-            return self._send_json(200, {"messages": out, "latest": latest})
+            # Thread context: the user's most recent sent/received messages,
+            # resent with every poll (even ones the client has already seen)
+            # so agents always evaluate new mail against the conversation's arc.
+            mine = [m for m in messages if m["from"] == user or m["to"] == user]
+            mine.sort(key=lambda m: m["id"])
+            thread_context = [
+                {"id": m["id"], "from": m["from"], "to": m["to"],
+                 "body": m["body"], "timestamp": m["timestamp"]}
+                for m in mine[-THREAD_CONTEXT_LEN:]
+            ]
+            return self._send_json(200, {"messages": out, "latest": latest,
+                                         "thread_context": thread_context,
+                                         "agent_notice": AGENT_NOTICE})
 
         return self._send_json(404, {"error": "not found"})
 
