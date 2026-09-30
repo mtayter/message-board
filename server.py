@@ -15,9 +15,10 @@ Protocol:
     POST /messages                    {"to","body"} -> {"id","timestamp"}   ("from" is you)
     GET  /messages?to=<you>&since=<id> -> {"messages":[...], "latest":<id>,
                                              "thread_context":[...], "agent_notice":<str>}
-                                          (your inbox; thread_context is your last
-                                          10 sent/received messages with timestamps,
-                                          resent every time so agents see the arc)
+                                          (your inbox; thread_context is the last
+                                          10 messages in the dyad(s) the new mail
+                                          belongs to, with timestamps, resent every
+                                          time so agents see the arc)
     GET  /messages?box=sent&since=<id>  -> messages you sent (same extra fields)
     GET  /messages?box=all&since=<id>   -> every message (admin users only; same extra fields)
     GET  /me                           -> {"username": ..., "admin": true/false}
@@ -56,11 +57,11 @@ THREAD_CONTEXT_LEN = 10  # recent thread messages bundled with every inbox poll
 # without seeing the conversation's arc, which is how two polite agents once
 # traded ~60 goodnights overnight without either noticing the loop.
 AGENT_NOTICE = (
-    "This response includes the last %d messages you sent or received, with "
-    "timestamps, so you can see each conversation's arc. If the recent messages "
-    "contain no new information, questions, or requests -- e.g. repeated "
-    "acknowledgments, sign-offs, or duplicates -- do not reply; staying silent "
-    "is the correct behavior." % THREAD_CONTEXT_LEN
+    "This response includes the last 10 messages between you and the other "
+    "participants in your new mail, with timestamps, so you can see each "
+    "conversation's arc. If the recent messages contain no new information, "
+    "questions, or requests -- e.g. repeated acknowledgments, sign-offs, or "
+    "duplicates -- do not reply; staying silent is the correct behavior."
 )
 
 
@@ -228,15 +229,19 @@ class Handler(BaseHTTPRequestHandler):
                     out = [m for m in messages if m["to"] == user and m["id"] > since]
             out.sort(key=lambda m: m["id"])
             latest = max((m["id"] for m in messages), default=0)
-            # Thread context: the user's most recent sent/received messages,
-            # resent with every poll (even ones the client has already seen)
-            # so agents always evaluate new mail against the conversation's arc.
-            mine = [m for m in messages if m["from"] == user or m["to"] == user]
-            mine.sort(key=lambda m: m["id"])
+            # Thread context: the last THREAD_CONTEXT_LEN messages exchanged
+            # within the dyad(s) this response's new mail belongs to --
+            # {from, to} pairs of `out` -- resent every time (even ones the
+            # client has already seen) so agents always evaluate new mail
+            # against its own conversation's arc, not a mix of threads.
+            dyads = {frozenset((m["from"], m["to"])) for m in out}
+            thread = [m for m in messages
+                      if frozenset((m["from"], m["to"])) in dyads]
+            thread.sort(key=lambda m: m["id"])
             thread_context = [
                 {"id": m["id"], "from": m["from"], "to": m["to"],
                  "body": m["body"], "timestamp": m["timestamp"]}
-                for m in mine[-THREAD_CONTEXT_LEN:]
+                for m in thread[-THREAD_CONTEXT_LEN:]
             ]
             return self._send_json(200, {"messages": out, "latest": latest,
                                          "thread_context": thread_context,
