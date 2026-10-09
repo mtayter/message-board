@@ -491,7 +491,6 @@ function addMessage(m){
   messages.unshift(m);
   // Keep sorted newest-first
   messages.sort(function(a,b){return b.id-a.id;});
-  try{ localStorage.setItem('wss_since', String(m.id)); }catch(e){}
   render();
 }
 
@@ -516,7 +515,6 @@ function connectWss(token, since){
       messages = (d.messages || []).slice().sort(function(a,b){return b.id-a.id;});
       let maxId = 0;
       messages.forEach(function(m){ if(m.id > maxId) maxId = m.id; });
-      if(maxId > 0){ try{ localStorage.setItem('wss_since', String(maxId)); }catch(e){} }
       render();
     }else if(d.type === 'message'){
       addMessage(d);
@@ -555,7 +553,7 @@ async function init(){
     // Get WSS token and connect
     const t = await api('GET','ws-token');
     let since = 0;
-    try{ since = parseInt(localStorage.getItem('wss_since') || '0', 10) || 0; }catch(e){}
+    var since = 0; // Always load full backlog on page init
     connectWss(t.token, since);
   }catch(e){ location.href='login'; }
 }
@@ -616,7 +614,6 @@ function addMessage(m){
   for(let i=0;i<messages.length;i++){ if(messages[i].id===m.id) return; }
   messages.unshift(m);
   messages.sort(function(a,b){return b.id-a.id;});
-  try{ localStorage.setItem('wss_admin_since', String(m.id)); }catch(e){}
   render();
 }
 
@@ -641,7 +638,6 @@ function connectWss(token, since){
       messages = (d.messages || []).slice().sort(function(a,b){return b.id-a.id;});
       let maxId = 0;
       messages.forEach(function(m){ if(m.id > maxId) maxId = m.id; });
-      if(maxId > 0){ try{ localStorage.setItem('wss_admin_since', String(maxId)); }catch(e){} }
       render();
     }else if(d.type === 'message'){
       addMessage(d);
@@ -662,7 +658,7 @@ async function init(){
   try{
     const t = await api('GET','ws-token');
     let since = 0;
-    try{ since = parseInt(localStorage.getItem('wss_admin_since') || '0', 10) || 0; }catch(e){}
+    var since = 0; // Always load full backlog on page init
     connectWss(t.token, since);
   }catch(e){ location.href='login'; }
 }
