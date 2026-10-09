@@ -552,8 +552,7 @@ async function init(){
     });
     // Get WSS token and connect
     const t = await api('GET','ws-token');
-    let since = 0;
-    var since = 0; // Always load full backlog on page init
+    let since = 0; // Always load full backlog on page init
     connectWss(t.token, since);
   }catch(e){ location.href='login'; }
 }
@@ -657,8 +656,7 @@ function connectWss(token, since){
 async function init(){
   try{
     const t = await api('GET','ws-token');
-    let since = 0;
-    var since = 0; // Always load full backlog on page init
+    let since = 0; // Always load full backlog on page init
     connectWss(t.token, since);
   }catch(e){ location.href='login'; }
 }
