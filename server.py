@@ -345,50 +345,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(200, {"token": token})
 
         if parsed.path == "/messages":
-            user = self._require_auth()
-            if user is None:
-                return
-            try:
-                since = int(query.get("since", ["0"])[0])
-            except ValueError:
-                return self._send_json(400, {"error": "since must be an integer id"})
-            box = query.get("box", ["inbox"])[0]
-            if box not in ("inbox", "sent", "all"):
-                return self._send_json(400, {"error": 'box must be "inbox", "sent" or "all"'})
-            messages = load_json(MESSAGES_FILE, [])
-            if box == "all":
-                if not self._is_admin(user):
-                    return self._send_json(403, {"error": "admin only"})
-                out = [m for m in messages if m["id"] > since]
-            else:
-                to = query.get("to", [user])[0]
-                if to != user:
-                    # You may only read your own inbox; ?to= stays in the protocol
-                    # so clients can name their own inbox explicitly.
-                    return self._send_json(403, {"error": "you can only read your own inbox"})
-                if box == "sent":
-                    out = [m for m in messages if m["from"] == user and m["id"] > since]
-                else:
-                    out = [m for m in messages if m["to"] == user and m["id"] > since]
-            out.sort(key=lambda m: m["id"])
-            latest = max((m["id"] for m in messages), default=0)
-            # Thread context: the last THREAD_CONTEXT_LEN messages exchanged
-            # within the dyad(s) this response's new mail belongs to --
-            # {from, to} pairs of `out` -- resent every time (even ones the
-            # client has already seen) so agents always evaluate new mail
-            # against its own conversation's arc, not a mix of threads.
-            dyads = {frozenset((m["from"], m["to"])) for m in out}
-            thread = [m for m in messages
-                      if frozenset((m["from"], m["to"])) in dyads]
-            thread.sort(key=lambda m: m["id"])
-            thread_context = [
-                {"id": m["id"], "from": m["from"], "to": m["to"],
-                 "body": m["body"], "timestamp": m["timestamp"]}
-                for m in thread[-THREAD_CONTEXT_LEN:]
-            ]
-            return self._send_json(200, {"messages": out, "latest": latest,
-                                         "thread_context": thread_context,
-                                         "agent_notice": AGENT_NOTICE})
+            # HTTP messaging retired 2026-10-09: all clients use WSS.
+            return self._send_json(410, {"error": "HTTP messaging disabled; use WSS"})
 
         return self._send_json(404, {"error": "not found"})
 
@@ -455,27 +413,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/messages":
-            user = self._require_auth()
-            if user is None:
-                return
-            data = self._read_json()
-            if not isinstance(data, dict):
-                return self._send_json(400, {"error": "JSON body required"})
-            to = (data.get("to") or "").strip()
-            body = (data.get("body") or "").strip()
-            if not to or not body:
-                return self._send_json(400, {"error": 'both "to" and "body" are required'})
-            if len(body) > MAX_BODY_LEN:
-                return self._send_json(413, {"error": "body too large"})
-            if to not in load_json(USERS_FILE, {}):
-                return self._send_json(404, {"error": "unknown recipient"})
-            messages = load_json(MESSAGES_FILE, [])
-            msg_id = max((m["id"] for m in messages), default=0) + 1
-            msg = {"id": msg_id, "from": user, "to": to,
-                   "body": body, "timestamp": int(time.time())}
-            messages.append(msg)
-            save_json(MESSAGES_FILE, messages)
-            return self._send_json(201, {"id": msg["id"], "timestamp": msg["timestamp"]})
+            # HTTP messaging retired 2026-10-09: all clients use WSS.
+            return self._send_json(410, {"error": "HTTP messaging disabled; use WSS"})
 
         return self._send_json(404, {"error": "not found"})
 
