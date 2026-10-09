@@ -329,6 +329,21 @@ class Handler(BaseHTTPRequestHandler):
                 return
             return self._send_json(200, {"users": sorted(load_json(USERS_FILE, {}).keys())})
 
+        if parsed.path == "/ws-token":
+            # Issue a Bearer token for WSS, using the browser session.
+            # Lets the web UI open a WSS connection without re-entering credentials.
+            user = self._require_session()
+            if user is None:
+                return
+            token = secrets.token_urlsafe(32)
+            digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+            now = time.time()
+            tokens = {k: v for k, v in load_json(TOKENS_FILE, {}).items()
+                      if v.get("expires", 0) > now}  # prune expired
+            tokens[digest] = {"user": user, "expires": now + TOKEN_TTL_SECONDS}
+            save_json(TOKENS_FILE, tokens)
+            return self._send_json(200, {"token": token})
+
         if parsed.path == "/messages":
             user = self._require_auth()
             if user is None:
@@ -513,8 +528,34 @@ input{font:inherit}
 <h2>Inbox</h2><div id="inbox"><p><i>loading&hellip;</i></p></div>
 </div>
 <script>
-// Auth is via the session cookie set at /login; the browser sends it
-// automatically. If it expired, the API redirects to /login and we reload.
+// WSS-based messaging. Auth via session cookie for /ws-token;
+// the WSS connection itself uses the Bearer token.
+let ws = null;
+let messages = [];  // local cache, newest first
+let myUsername = null;
+
+function esc(s){return String(s).replace(/[&<>"']/g,function(c){
+  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+
+function render(){
+  const box=document.getElementById('inbox');
+  if(!messages.length){box.innerHTML='<p><i>No messages yet.</i></p>';return;}
+  box.innerHTML=messages.map(function(m){
+    return '<div class="msg"><div class="meta">#'+m.id+' &middot; from <b>'+esc(m.from)+
+      '</b> &middot; '+new Date(m.timestamp*1000).toLocaleString()+'</div><div>'+esc(m.body)+'</div></div>';
+  }).join('');
+}
+
+function addMessage(m){
+  // Prepend if not already present (dedupe by id)
+  for(let i=0;i<messages.length;i++){ if(messages[i].id===m.id) return; }
+  messages.unshift(m);
+  // Keep sorted newest-first
+  messages.sort(function(a,b){return b.id-a.id;});
+  try{ localStorage.setItem('wss_since', String(m.id)); }catch(e){}
+  render();
+}
+
 async function api(method,path,data){
   const r=await fetch(path,{method:method,headers:{'Content-Type':'application/json'},
     body:data?JSON.stringify(data):undefined});
@@ -522,47 +563,82 @@ async function api(method,path,data){
   if(!r.ok) throw new Error((await r.text())||('HTTP '+r.status));
   return r.json();
 }
-function esc(s){return String(s).replace(/[&<>"']/g,function(c){
-  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
-async function load(){
-  const d=await api('GET','messages');
-  const box=document.getElementById('inbox');
-  if(!d.messages.length){box.innerHTML='<p><i>No messages yet.</i></p>';return;}
-  box.innerHTML=d.messages.slice().reverse().map(function(m){
-    return '<div class="msg"><div class="meta">#'+m.id+' &middot; from <b>'+esc(m.from)+
-      '</b> &middot; '+new Date(m.timestamp*1000).toLocaleString()+'</div><div>'+esc(m.body)+'</div></div>';
-  }).join('');
+
+function connectWss(token, since){
+  const proto = (location.protocol === 'https:') ? 'wss://' : 'ws://';
+  ws = new WebSocket(proto + location.host + '/board/ws');
+  ws.onopen = function(){
+    ws.send(JSON.stringify({type:'hello', token:token, since:since}));
+  };
+  ws.onmessage = function(ev){
+    let d;
+    try{ d = JSON.parse(ev.data); }catch(e){ return; }
+    if(d.type === 'backlog'){
+      messages = (d.messages || []).slice().sort(function(a,b){return b.id-a.id;});
+      let maxId = 0;
+      messages.forEach(function(m){ if(m.id > maxId) maxId = m.id; });
+      if(maxId > 0){ try{ localStorage.setItem('wss_since', String(maxId)); }catch(e){} }
+      render();
+    }else if(d.type === 'message'){
+      addMessage(d);
+    }else if(d.type === 'sent'){
+      document.getElementById('sent').textContent='Sent as #'+d.id+'.';
+      document.getElementById('body').value='';
+    }else if(d.type === 'error'){
+      document.getElementById('sent').textContent='Failed: '+d.message;
+    }
+  };
+  ws.onclose = function(){
+    // Reconnect after 3s (unless we're navigating away)
+    setTimeout(function(){
+      api('GET','ws-token').then(function(t){ connectWss(t.token, 0); })
+        .catch(function(){ location.href='login'; });
+    }, 3000);
+  };
+  ws.onerror = function(){ ws.close(); };
 }
+
 async function init(){
   try{
-    const d=await api('GET','me');
-    document.getElementById('me').textContent=d.username;
-    await load(); setInterval(load,15000);
-    const ul=await api('GET','users');
+    const me = await api('GET','me');
+    myUsername = me.username;
+    document.getElementById('me').textContent = myUsername;
+    if(me.admin){
+      document.getElementById('adminlink').hidden=false;
+    }
+    const ul = await api('GET','users');
     const sel=document.getElementById('to');
-    ul.users.filter(function(x){return x!==d.username;}).forEach(function(x){
+    ul.users.filter(function(x){return x!==myUsername;}).forEach(function(x){
       const o=document.createElement('option');
       o.value=x; o.textContent=x;
       sel.appendChild(o);
     });
-    if(d.admin){
-      document.getElementById('adminlink').hidden=false;
-    }
+    // Get WSS token and connect
+    const t = await api('GET','ws-token');
+    let since = 0;
+    try{ since = parseInt(localStorage.getItem('wss_since') || '0', 10) || 0; }catch(e){}
+    connectWss(t.token, since);
   }catch(e){ location.href='login'; }
 }
 init();
 document.getElementById('out').onclick=async function(){
+  if(ws){ try{ ws.close(); }catch(e){} }
   await fetch('logout',{method:'POST'});
   location.href='login';
 };
-document.getElementById('refresh').onclick=function(){load().catch(function(e){alert(e);});};
-document.getElementById('send').onclick=async function(){
+document.getElementById('refresh').onclick=function(){ render(); };
+document.getElementById('send').onclick=function(){
   const to=document.getElementById('to').value.trim(), body=document.getElementById('body').value;
-  try{
-    const d=await api('POST','messages',{to:to,body:body});
-    document.getElementById('sent').textContent='Sent as #'+d.id+'.';
-    document.getElementById('body').value='';
-  }catch(e){ document.getElementById('sent').textContent='Failed: '+e.message; }
+  if(!ws || ws.readyState !== WebSocket.OPEN){
+    document.getElementById('sent').textContent='Not connected, retrying…';
+    return;
+  }
+  if(!to || !body.trim()){
+    document.getElementById('sent').textContent='Pick a recipient and type a message.';
+    return;
+  }
+  ws.send(JSON.stringify({type:'send', to:to, body:body}));
+  document.getElementById('sent').textContent='Sending…';
 };
 </script></body></html>
 """
@@ -579,8 +655,32 @@ body{font-family:system-ui,sans-serif;max-width:44rem;margin:2rem auto;padding:0
 <p><button onclick="location.href='./'">Back to inbox</button> <button id="out">Sign out</button></p>
 <h2>All messages (admin)</h2><div id="allbox"><p><i>loading&hellip;</i></p></div>
 <script>
-// Auth is via the session cookie set at /login; the browser sends it
-// automatically. If it expired, the API redirects to /login and we reload.
+// WSS-based admin view. Auth via session cookie for /ws-token;
+// the WSS connection itself uses the Bearer token.
+// Admin connections receive ALL messages (backlog + live pushes).
+let ws = null;
+let messages = [];  // local cache, newest first
+
+function esc(s){return String(s).replace(/[&<>"']/g,function(c){
+  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+
+function render(){
+  const box=document.getElementById('allbox');
+  if(!messages.length){box.innerHTML='<p><i>No messages yet.</i></p>';return;}
+  box.innerHTML=messages.map(function(m){
+    return '<div class="msg"><div class="meta">#'+m.id+' &middot; <b>'+esc(m.from)+'</b> &rarr; <b>'+
+      esc(m.to)+'</b> &middot; '+new Date(m.timestamp*1000).toLocaleString()+'</div><div>'+esc(m.body)+'</div></div>';
+  }).join('');
+}
+
+function addMessage(m){
+  for(let i=0;i<messages.length;i++){ if(messages[i].id===m.id) return; }
+  messages.unshift(m);
+  messages.sort(function(a,b){return b.id-a.id;});
+  try{ localStorage.setItem('wss_admin_since', String(m.id)); }catch(e){}
+  render();
+}
+
 async function api(method,path,data){
   const r=await fetch(path,{method:method,headers:{'Content-Type':'application/json'},
     body:data?JSON.stringify(data):undefined});
@@ -588,24 +688,48 @@ async function api(method,path,data){
   if(!r.ok) throw new Error((await r.text())||('HTTP '+r.status));
   return r.json();
 }
-function esc(s){return String(s).replace(/[&<>"']/g,function(c){
-  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
-async function loadAll(){
-  const d=await api('GET','messages?box=all');
-  const box=document.getElementById('allbox');
-  if(!d.messages.length){box.innerHTML='<p><i>No messages yet.</i></p>';return;}
-  box.innerHTML=d.messages.slice().reverse().map(function(m){
-    return '<div class="msg"><div class="meta">#'+m.id+' &middot; <b>'+esc(m.from)+'</b> &rarr; <b>'+
-      esc(m.to)+'</b> &middot; '+new Date(m.timestamp*1000).toLocaleString()+'</div><div>'+esc(m.body)+'</div></div>';
-  }).join('');
+
+function connectWss(token, since){
+  const proto = (location.protocol === 'https:') ? 'wss://' : 'ws://';
+  ws = new WebSocket(proto + location.host + '/board/ws');
+  ws.onopen = function(){
+    ws.send(JSON.stringify({type:'hello', token:token, since:since}));
+  };
+  ws.onmessage = function(ev){
+    let d;
+    try{ d = JSON.parse(ev.data); }catch(e){ return; }
+    if(d.type === 'backlog'){
+      messages = (d.messages || []).slice().sort(function(a,b){return b.id-a.id;});
+      let maxId = 0;
+      messages.forEach(function(m){ if(m.id > maxId) maxId = m.id; });
+      if(maxId > 0){ try{ localStorage.setItem('wss_admin_since', String(maxId)); }catch(e){} }
+      render();
+    }else if(d.type === 'message'){
+      addMessage(d);
+    }else if(d.type === 'error'){
+      document.getElementById('allbox').innerHTML='<p><i>Error: '+esc(d.message)+'</i></p>';
+    }
+  };
+  ws.onclose = function(){
+    setTimeout(function(){
+      api('GET','ws-token').then(function(t){ connectWss(t.token, 0); })
+        .catch(function(){ location.href='login'; });
+    }, 3000);
+  };
+  ws.onerror = function(){ ws.close(); };
 }
+
 async function init(){
   try{
-    await loadAll(); setInterval(loadAll,15000);
+    const t = await api('GET','ws-token');
+    let since = 0;
+    try{ since = parseInt(localStorage.getItem('wss_admin_since') || '0', 10) || 0; }catch(e){}
+    connectWss(t.token, since);
   }catch(e){ location.href='login'; }
 }
 init();
 document.getElementById('out').onclick=async function(){
+  if(ws){ try{ ws.close(); }catch(e){} }
   await fetch('logout',{method:'POST'});
   location.href='login';
 };
