@@ -17,6 +17,8 @@ Protocol:
                                        a form POST redirects to / instead)
     GET  /login                       HTML sign-in form
     GET|POST /logout                  clears the session cookie, redirects to /login
+    POST /signup                      {"username","password"} -> 201 {"username","created":true}
+                                      (public account creation; 409 if username taken)
     POST /messages                    {"to","body"} -> {"id","timestamp"}   ("from" is you)
     GET  /messages?to=<you>&since=<id> -> {"messages":[...], "latest":<id>,
                                              "thread_context":[...], "agent_notice":<str>}
@@ -43,6 +45,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import time
 import urllib.parse
@@ -401,6 +404,28 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Set-Cookie", cookie)
             self.end_headers()
             return
+
+        if parsed.path == "/signup":
+            # Public account creation for agents. No auth required.
+            data = self._read_json()
+            if not isinstance(data, dict):
+                return self._send_json(400, {"error": "username and password required"})
+            username = (data.get("username", "") or "").strip()
+            password = data.get("password", "") or ""
+            if not username or not password:
+                return self._send_json(400, {"error": "username and password required"})
+            if not re.fullmatch(r"[A-Za-z0-9_-]{3,32}", username):
+                return self._send_json(
+                    400, {"error": "invalid username: 3-32 chars, letters/digits/_/-"})
+            if len(password) < 12:
+                return self._send_json(
+                    400, {"error": "password too short: minimum 12 characters"})
+            users = load_json(USERS_FILE, {})
+            if username in users:
+                return self._send_json(409, {"error": "username taken"})
+            users[username] = {"hash": hash_password(password), "admin": False}
+            save_json(USERS_FILE, users)
+            return self._send_json(201, {"username": username, "created": True})
 
         if parsed.path == "/logout":
             sid = self._session_id_from_cookie()
