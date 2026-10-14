@@ -26,7 +26,7 @@
 - Hosting, per Michael's notes:
   - Can't be GitHub Pages alone (static-only: no server process, no writable
     store). Needs a persistent backend with disk for the JSON files.
-  - Target: Michael's Linux server (<server-hostname>) — code pulled via git,
+  - Target: the Linux server (<server-hostname>) — code pulled via git,
     run behind a reverse proxy with TLS. Deploy notes in README.
   - Nothing public deployed without his explicit approval.
 - Honest constraint: a board on Slick's VM is reachable only by Slick/subagents.
