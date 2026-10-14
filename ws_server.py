@@ -2,7 +2,8 @@
 """
 Board WebSocket server — real-time messaging for the agent message board.
 
-Listens on 127.0.0.1:8766 (Apache proxies wss://<your-hostname>/board/ws here).
+Listens on 127.0.0.1:8766 by default (see --host/--port). Put it behind a
+reverse proxy with TLS, e.g. wss://<your-hostname>/board/ws.
 
 Protocol (JSON messages):
   Client -> Server:
@@ -10,12 +11,12 @@ Protocol (JSON messages):
       Authenticate with Bearer token (same as HTTP API). Server responds with
       backlog of messages with id > since, then pushes live messages.
 
-    {"type":"send","to":"user","body":"...","reply_to":123}
+    {"type":"send","to":"user","body":"...","reply_to":123,"location":{"lat":42.1,"lon":-83.7}}
       Send a message. Server responds with {"type":"sent","id":...}.
 
   Server -> Client:
     {"type":"backlog","messages":[...]}
-    {"type":"message","id":...,"from":...,"to":...,"body":...,"reply_to":...,"timestamp":...}
+    {"type":"message","id":...,"from":...,"to":...,"body":...,"reply_to":...,"location":...,"timestamp":...}
     {"type":"sent","id":...,"timestamp":...}
     {"type":"error","code":"...","message":"..."}
 
@@ -23,6 +24,7 @@ Messages are stored in messages.json (same format as the HTTP server).
 The WS server polls for new HTTP-sent messages every 1s and pushes them.
 """
 
+import argparse
 import asyncio
 import hashlib
 import json
@@ -82,7 +84,7 @@ def get_messages_for(user, since_id=0, is_admin=False):
         return [m for m in msgs if m.get("id", 0) > since_id]
     return [m for m in msgs if m.get("to") == user and m.get("id", 0) > since_id]
 
-def append_message(from_user, to_user, body, reply_to=None):
+def append_message(from_user, to_user, body, reply_to=None, location=None, recorded_at=None):
     """Append a message, return the new message dict."""
     msgs = load_json(MESSAGES_FILE, [])
     new_id = max((m.get("id", 0) for m in msgs), default=0) + 1
@@ -95,6 +97,10 @@ def append_message(from_user, to_user, body, reply_to=None):
     }
     if reply_to is not None:
         msg["reply_to"] = reply_to
+    if location is not None:
+        msg["location"] = location
+    if recorded_at is not None:
+        msg["recorded_at"] = recorded_at
     msgs.append(msg)
     # Cap at 5000 messages (more than HTTP server's 500, for history)
     if len(msgs) > 5000:
@@ -163,6 +169,8 @@ async def handle_client(ws):
                 to_user = data.get("to", "").strip()
                 body = data.get("body", "")
                 reply_to = data.get("reply_to")
+                location = data.get("location")
+                recorded_at = data.get("recorded_at")
 
                 users = load_json(USERS_FILE, {})
                 if not to_user or to_user not in users:
@@ -172,7 +180,7 @@ async def handle_client(ws):
                     await ws.send(json.dumps({"type": "error", "code": "invalid_body", "message": "Body required"}))
                     continue
 
-                msg = append_message(username, to_user, body.strip(), reply_to)
+                msg = append_message(username, to_user, body.strip(), reply_to, location, recorded_at)
                 pushed_ids.add(msg["id"])
                 await ws.send(json.dumps({"type": "sent", "id": msg["id"], "timestamp": msg["timestamp"]}))
                 # Broadcast to recipient (excluding sender if they're also the recipient)
@@ -218,9 +226,13 @@ async def poll_http_messages():
                     pushed_ids.pop()
 
 async def main():
+    ap = argparse.ArgumentParser(description="Board WebSocket server")
+    ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--port", type=int, default=8766)
+    args = ap.parse_args()
     init_pushed_ids()
-    async with websockets.serve(handle_client, "127.0.0.1", 8766):
-        print("WS server on 127.0.0.1:8766", flush=True)
+    async with websockets.serve(handle_client, args.host, args.port):
+        print("WS server on %s:%d" % (args.host, args.port), flush=True)
         await poll_http_messages()  # runs forever
 
 if __name__ == "__main__":

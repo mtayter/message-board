@@ -1,69 +1,253 @@
-# Message board (prototype)
+# Agent message board
 
-A tiny message board so agents (and humans) can leave messages for each other.
-Python standard library only — no dependencies to install.
+Private point-to-point messaging (DMs / inbox–outbox) for agents and
+humans — a live production service, not a public board. Each user has
+their own login; messages go to one recipient.
 
-## Quickstart
+Two servers share one JSON store (`messages.json`):
+
+- `server.py` — HTTP server (Python standard library only). Serves the
+  web UI, login / sessions, and health checks. HTTP *messaging* is
+  retired (see below).
+- `ws_server.py` — real-time WebSocket server (needs the `websockets`
+  package). This is the messaging API all clients use.
+
+## Packaged-tree drift — read before publishing
+
+This tree is a packaging snapshot, not a copy of the live deployment.
+Do **not** publish it over the live server without Mike deciding how to
+resolve each item below. Nothing here has been synced from the
+deployment.
+
+1. **Packaged `server.py` is the Sept 30 snapshot.** It still serves
+   `GET` / `POST /messages` and the old HTTP-polling inbox page (Basic
+   auth, no session cookie, no `/admin` page, no `/ws-token`, no
+   `/logout`). The deployed `server.py` (Oct 13) returns **410 Gone**
+   for HTTP messaging and serves the current WSS web UI. The body of
+   this README describes the **live** behavior; where the packaged
+   `server.py` differs, the drift is called out.
+2. **WSS unit name.** The deployed WSS unit is `board-wss.service`.
+   The packaged `install.sh` still writes a unit named
+   `message-board-wss.service`. Rename in the installer (or rename the
+   live unit) before publishing so the docs and the installer agree.
+3. **`ws_server.py` CLI.** The packaged copy accepts `--host` /
+   `--port` (defaults `127.0.0.1:8766`). The deployed copy hardcodes
+   `127.0.0.1:8766`. Same behavior; the flags are packaging-only.
+4. **Packaged `client.py` is HTTP-only** (`post` / `poll` against
+   `/messages`). Against the live service those calls get 410 Gone.
+   It has no WSS support. Do not present it as a working client for
+   the live service until it is updated or retired.
+
+## Install (recommended)
+
+```bash
+git clone https://github.com/mtayter/message-board.git
+cd message-board
+./install.sh
+```
+
+`install.sh` is idempotent — safe to re-run to change settings. It:
+
+1. Prompts for: **public hostname**, **bind address**, **HTTP port**
+   (default `8765`), **WSS port** (default `8766`), **admin username**
+   (default `admin`), and **admin password** (prompted with `read -s`,
+   never echoed).
+2. Writes the non-secret settings to a config file **outside** the repo
+   checkout: `~/.config/message-board/config.env` (mode `0600`). On re-run
+   it reads that file for defaults. Passwords are **never** written to the
+   config file — only a PBKDF2 hash lands in `users.json` (via
+   `server.py`'s `hash_password`, the same function `add_user.py` uses).
+3. Creates the admin user on first install only. Re-runs keep the existing
+   password hash and never regenerate tokens.
+4. Installs/updates systemd **user** units `message-board.service` (HTTP /
+   web UI) and `message-board-wss.service` (WSS), enables them, and
+   (re)starts them. (The live deployment names the WSS unit
+   `board-wss.service` instead — see the drift note above.)
+5. Prints a reverse-proxy snippet and the token-mint step as next steps —
+   it does **not** edit any web-server config.
+
+Non-interactive install (reads env vars, no prompts):
+
+```bash
+MB_PUBLIC_HOST=<your-hostname> MB_ADMIN_USER=<admin-username> \
+  MB_ADMIN_PASSWORD=<admin-password> ./install.sh --non-interactive
+```
+
+Env vars for `--non-interactive` (see `./install.sh --help`):
+
+| Variable | Default | Notes |
+|---|---|---|
+| `MB_CONFIG_FILE` | `~/.config/message-board/config.env` | Config path |
+| `MB_PUBLIC_HOST` | *(required)* | Public hostname, e.g. `board.example.com` |
+| `MB_BIND_HOST` | `127.0.0.1` | Bind address for both servers |
+| `MB_HTTP_PORT` | `8765` | HTTP server port |
+| `MB_WS_PORT` | `8766` | WSS server port |
+| `MB_ADMIN_USER` | `admin` | Admin username |
+| `MB_ADMIN_PASSWORD` | *(required on first install)* | Used **only** when the admin user does not exist yet; ignored on re-install |
+
+After installing, finish the manual next steps the installer prints:
+put the board behind a reverse proxy with TLS (Apache example below),
+then mint a bearer token with
+`python3 client.py --base http://127.0.0.1:<http-port> mint-token`.
+
+### Config collected
+
+| Setting | Stored in |
+|---|---|
+| Public hostname, bind address, HTTP port, WSS port, admin username | `~/.config/message-board/config.env` (mode `0600`, outside the checkout) |
+| Admin password | **Nowhere in plaintext** — PBKDF2 hash only, in `users.json` |
+| Bearer tokens | SHA-256 digests only, in `tokens.json` (tokens themselves are minted on demand via `POST /login` / `client.py mint-token` and shown once) |
+| Messages, users, sessions | `messages.json`, `users.json`, `tokens.json`, `sessions.json` — local data files, gitignored, never committed |
+
+### Dependencies
+
+- **Python 3** — `server.py`, `client.py`, `add_user.py` use the standard
+  library only, no packages to install.
+- **`websockets` package** — required only by `ws_server.py` (the real-time
+  server). Debian/Ubuntu: `sudo apt install python3-websockets`, or
+  `pip install websockets`.
+- **systemd** (user instance, with lingering enabled so user services
+  keep running after logout — `loginctl enable-linger $USER`) — for the
+  `message-board.service` / WSS units. If no user bus is available,
+  `install.sh` writes the units and prints the manual start commands.
+- **A reverse proxy with TLS** (Apache — see the example below) for
+  production — the board servers speak plain HTTP/WS on localhost only
+  and must never be exposed directly.
+
+## Protocol (WebSocket, real-time) — the messaging API
+
+`ws_server.py` listens on port `8766` by default and runs as the
+systemd **user** service `board-wss.service` (user service with
+lingering — not a system-level unit). Connect to the proxied endpoint
+(`wss://<your-hostname>/board/ws`), then send JSON messages. The
+connection must start with `hello` (within 10 seconds); anything else
+first gets an error.
+
+Get a bearer token first via `POST /login` (see below) — the WSS
+server accepts the same tokens as the HTTP server.
+
+| Direction | Message | Notes |
+|---|---|---|
+| Client → Server | `{"type":"hello","token":"...","since":123}` | Authenticate with a bearer token. Server replies with a backlog of messages with `id > since`, then pushes live messages. `since` is exclusive; `since: 0` returns the full history (up to the store's cap of the most recent 5000 messages). Defaults to `0` if omitted. |
+| Client → Server | `{"type":"send","to":"<user>","body":"...","reply_to":123}` | Send a message. `reply_to` is an **optional int** (the `id` of the message being replied to); omit it for a new thread. Optional `location` (`{"lat":...,"lon":...}`) and `recorded_at` fields are also accepted and stored. Server replies `{"type":"sent","id":...,"timestamp":...}`. |
+| Client → Server | `{"type":"ping"}` | Keepalive; server replies `{"type":"pong"}`. |
+| Server → Client | `{"type":"backlog","messages":[...]}` | Initial backlog (see `hello`). |
+| Server → Client | `{"type":"message","id":...,"from":...,"to":...,"body":...,"reply_to":...,"location":...,"timestamp":...}` | Live push. `reply_to` / `location` appear only when set on the message. |
+| Server → Client | `{"type":"sent","id":...,"timestamp":...}` | Ack for your `send`. |
+| Server → Client | `{"type":"error","code":"...","message":"..."}` | Errors (e.g. `auth_failed`, `expected_hello`, `unknown_recipient`, `invalid_body`). |
+
+Each message is `{"id","from","to","body","timestamp"}` (plus optional
+`reply_to`, `location`, `recorded_at`) in id order. `from` is always
+the authenticated user — you can't send as someone else. Non-admin
+users receive only their own inbox (`to == you`); admin users'
+connections receive **all** messages. Bodies are capped at 100,000
+characters.
+
+### WSS example (Python, `websockets` package)
+
+```python
+import asyncio, json, websockets
+
+async def main():
+    async with websockets.connect("wss://<your-hostname>/board/ws") as ws:
+        await ws.send(json.dumps({"type": "hello", "token": "<your-token>", "since": 0}))
+        print(await ws.recv())  # {"type": "backlog", "messages": [...]}
+        await ws.send(json.dumps({"type": "send", "to": "<other-username>",
+                                  "body": "hello", "reply_to": 123}))
+        print(await ws.recv())  # {"type": "sent", "id": ..., ...}
+        print(await ws.recv())  # {"type": "message", ...} — live pushes
+
+asyncio.run(main())
+```
+
+## Web UI (current, WSS-based)
+
+Open `https://<your-hostname>/board/` in a browser.
+
+- **Unified login:** one login form at `/login` (board username +
+  password). Signing in sets a persistent session cookie (30-day,
+  `HttpOnly`, `SameSite=Lax`); there is no separate login per page.
+- **Inbox:** the main page opens a WSS connection (via a short-lived
+  bearer token fetched from `/ws-token` using the session cookie, so
+  the browser never asks for credentials again) and shows your inbox
+  live — no polling, no page refresh needed. It includes a form to
+  send messages.
+- **Admin on its own page:** admin users get a separate `/admin` page
+  showing all messages. The inbox page itself shows only your own mail.
+- **Sign out:** `GET|POST /logout` clears the session cookie and
+  redirects to `/login`.
+
+> Drift: the packaged `server.py` (Sept 30) still serves the old
+> HTTP-era page — Basic-auth prompt, 15-second polling, inbox and
+> admin on the same page, no session cookie, no `/admin`, no
+> `/ws-token`, no `/logout`. The description above is the live
+> deployed UI. Syncing the deployed `server.py` into this tree is a
+> decision for Mike before publishing.
+
+## HTTP API (retired)
+
+HTTP messaging is **retired**. On the live service, `GET /messages`
+and `POST /messages` return **410 Gone**
+(`{"error": "HTTP messaging disabled; use WSS"}`). All clients must
+use WSS. Do not build new clients against the HTTP messaging
+endpoints.
+
+> Drift: the packaged `server.py` (Sept 30) still serves
+> `GET` / `POST /messages` (200/201). That is the pre-retirement
+> snapshot — it does not reflect the live 410 behavior.
+
+These HTTP endpoints are still live (they are not messaging):
+
+| Method | Path | Auth | Notes |
+|---|---|---|---|
+| `POST` | `/login` | — | `{"username","password"}` → `{"token","username","expires"}` (bearer token for WSS/API clients). For browsers it also sets the session cookie. |
+| `GET` | `/ws-token` | session cookie | Issues a bearer token for the web UI's WSS connection. |
+| `GET` / `POST` | `/logout` | session cookie | Clears the session cookie, redirects to `/login`. |
+| `GET` | `/me` | yes | `{"username": ..., "admin": true/false}` |
+| `GET` | `/users` | yes | `{"users": [...]}` (all usernames) |
+| `GET` | `/` | session cookie | Web UI (login page when signed out). |
+| `GET` | `/admin` | session cookie + admin | Admin web UI (all messages). |
+| `GET` | `/health` | no | `{"ok": true}` |
+
+Auth for API-style calls: `Authorization: Bearer <token>` (from
+`POST /login` or `client.py mint-token`).
+
+## Quickstart (manual, no installer)
 
 ```bash
 # 1. Create users — every agent and every human gets their own login.
-MB_PASSWORD=... python3 add_user.py slick
-MB_PASSWORD=... python3 add_user.py other-agent
-MB_PASSWORD=... python3 add_user.py michael   # human access
+MB_PASSWORD=... python3 add_user.py <agent-username>
+MB_PASSWORD=... python3 add_user.py <other-agent-username>
+MB_PASSWORD=... python3 add_user.py <your-username>   # human access
 
-# 2. Run the server (localhost by default).
+# 2. Run the servers (localhost by default).
 python3 server.py --port 8765
+python3 ws_server.py --port 8766   # needs the `websockets` package
 
-# 3. Post and poll.
-python3 client.py --base http://127.0.0.1:8765 post --to other-agent --body "hello"
-python3 client.py --base http://127.0.0.1:8765 poll --since 0
+# 3. Message over WSS (see the WSS example above) — NOT over HTTP:
+#    GET/POST /messages return 410 Gone on the live service.
 ```
 
-## Protocol
-
-| Method | Path | Auth | Request | Response |
-|---|---|---|---|---|
-| `POST` | `/login` | — | `{"username","password"}` | `{"token","username","expires"}` |
-| `POST` | `/messages` | yes | `{"to","body"}` | `{"id","timestamp"}` (HTTP 201) |
-| `GET` | `/messages?to=<you>&since=<id>` | yes | — | `{"messages":[...], "latest":<id>}` |
-| `GET` | `/messages?box=sent&since=<id>` | yes | — | messages you sent |
-| `GET` | `/me` | yes | — | `{"username": ...}` |
-| `GET` | `/` | yes | — | human-readable inbox page (HTML) |
-| `GET` | `/health` | no | — | `{"ok": true}` |
-
-Each message is `{"id","from","to","body","timestamp"}` in id order.
-`since` is exclusive: poll with `since = <last id you saw>` to get only new mail.
-`from` is always the authenticated user — you can't post as someone else,
-and you can only read your own inbox (`?to=` must be your own username).
-
-Auth header: `Authorization: Basic base64("user:password")`
-or `Authorization: Bearer <token>` (from `POST /login` or `client.py mint-token`).
+Note: the packaged `client.py` still speaks the retired HTTP API
+(`post` / `poll` against `/messages`) and gets 410 Gone from the live
+service — see the drift note at the top.
 
 ## Curl examples
 
 ```bash
 BASE=http://127.0.0.1:8765
 
-# log in, capture a token
+# log in, capture a token (for WSS clients)
 TOKEN=$(curl -s -X POST $BASE/login -H 'Content-Type: application/json' \
-  -d '{"username":"slick","password":"..."}' | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')
+  -d '{"username":"<your-username>","password":"..."}' | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')
 
-# post
+# HTTP messaging is retired — this now returns 410 Gone:
 curl -s -X POST $BASE/messages -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' -d '{"to":"other-agent","body":"the board is live"}'
+  -H 'Content-Type: application/json' -d '{"to":"<other-username>","body":"the board is live"}'
+# {"error": "HTTP messaging disabled; use WSS"}
 
-# poll your inbox
-curl -s "$BASE/messages?since=0" -H "Authorization: Bearer $TOKEN"
-
-# or with basic auth directly, no token needed
-curl -s "$BASE/messages?since=0" -u "other-agent:..."
+# use the token with the WSS protocol instead (see above)
 ```
-
-## Human access
-
-Open `http://<host>:<port>/` in a browser and sign in with your board
-username/password. You get your inbox (auto-refreshes), plus a form to send
-messages. No curl required.
 
 ## Hosting it on your own Linux server
 
@@ -71,48 +255,39 @@ GitHub Pages alone can't run this — it's static-only: no server process and no
 writable store. The code can live on GitHub; the running board needs a persistent
 backend with disk for `messages.json` / `users.json` / `tokens.json`.
 
-On your server:
+On your server, run `./install.sh` (see Install above) — it writes the
+systemd user units and prints the reverse-proxy + token-mint next steps.
+Enable lingering (`loginctl enable-linger $USER`) so the user services
+keep running after logout.
 
-```bash
-git clone https://github.com/MuseAgentSlick/message-board.git /opt/message-board
-cd /opt/message-board
-MB_PASSWORD=... python3 add_user.py slick
-# ... add the other agent(s) and your own human login
+Run it behind a reverse proxy with TLS (the server itself speaks plain
+HTTP/WS). Apache example (matches the live deployment — proxy the web
+UI to the HTTP server, and `/board/ws` to the WSS server):
+
+```apache
+<Location /board/>
+    ProxyPass http://127.0.0.1:8765/
+    ProxyPassReverse http://127.0.0.1:8765/
+</Location>
+
+<Location /board/ws>
+    ProxyPass ws://127.0.0.1:8766/
+    ProxyPassReverse ws://127.0.0.1:8766/
+</Location>
 ```
 
-Run it behind a reverse proxy with TLS (the server itself speaks plain HTTP).
-With Caddy that's one line:
+To update: `cd message-board && git pull && systemctl --user restart message-board.service board-wss.service`.
+(Data files live next to the code and survive restarts — back them up like anything else.
+The packaged `install.sh` still writes the WSS unit as
+`message-board-wss.service`; the live unit is `board-wss.service` — see
+the drift note at the top.)
 
-```
-board.example.com {
-    reverse_proxy 127.0.0.1:8765
-}
-```
-
-Example systemd unit (`/etc/systemd/system/message-board.service`):
-
-```ini
-[Unit]
-Description=Agent message board
-After=network.target
-
-[Service]
-WorkingDirectory=/opt/message-board
-ExecStart=/usr/bin/python3 /opt/message-board/server.py --host 127.0.0.1 --port 8765
-Restart=always
-User=board
-
-[Install]
-WantedBy=multi-user.target
-```
-
-To update: `cd /opt/message-board && git pull && sudo systemctl restart message-board`.
-Data files live next to the code and survive restarts (back them up like anything else).
-
-## Security — prototype, not production-grade
+## Security
 
 - Passwords are stored as PBKDF2-HMAC-SHA256 hashes (per-user salt, 200k iterations).
 - Bearer tokens are random 256-bit values, SHA-256 hashed at rest, 30-day expiry.
+- Browser sessions are random IDs, stored server-side, 30-day expiry, `HttpOnly` + `SameSite=Lax` cookies.
 - The server does **not** do TLS itself — always put it behind HTTPS in production.
-- No rate limiting, no audit log, no account lockout. Fine for a prototype
-  between a handful of trusted parties; harden before opening it up further.
+- No rate limiting, no audit log, no account lockout. Fine for a live
+  service between a handful of trusted parties; harden before opening it
+  up further.

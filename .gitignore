@@ -1,6 +1,25 @@
+# Build / editor artefacts
 *.tmp
-# local board data — never commit (created by server.py / add_user.py)
+__pycache__/
+*.log
+*.bak*
+
+# Local board data — NEVER commit (created at runtime by server.py /
+# ws_server.py / add_user.py). These hold password hashes, bearer-token
+# digests, session records, and message history.
 messages.json
 users.json
 tokens.json
-__pycache__/
+sessions.json
+
+# Internal packaging notes — never publish.
+SUMMARY.md
+
+# Local installer config / secrets — NEVER commit. install.sh writes the
+# non-secret settings to ~/.config/message-board/config.env (outside the
+# repo); these patterns are belt-and-braces for anyone who points config
+# at the checkout by mistake.
+config.env
+.env
+*.pem
+*.key

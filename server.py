@@ -505,8 +505,9 @@ function render(){
   const box=document.getElementById('inbox');
   if(!messages.length){box.innerHTML='<p><i>No messages yet.</i></p>';return;}
   box.innerHTML=messages.map(function(m){
-    return '<div class="msg"><div class="meta">#'+m.id+' &middot; from <b>'+esc(m.from)+
-      '</b> &middot; '+new Date(m.timestamp*1000).toLocaleString()+'</div><div>'+esc(m.body)+'</div></div>';
+    var other = (m.from === myUsername) ? 'to <b>'+esc(m.to)+'</b>' : 'from <b>'+esc(m.from)+'</b>';
+    return '<div class="msg"><div class="meta">#'+m.id+' &middot; '+other+
+      ' &middot; '+new Date(m.timestamp*1000).toLocaleString()+'</div><div>'+esc(m.body)+'</div></div>';
   }).join('');
 }
 
