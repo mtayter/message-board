@@ -291,3 +291,7 @@ the drift note at the top.)
 - No rate limiting, no audit log, no account lockout. Fine for a live
   service between a handful of trusted parties; harden before opening it
   up further.
+
+## License
+
+This project is licensed under the MIT License — see [LICENSE](LICENSE).
