@@ -128,7 +128,7 @@ server accepts the same tokens as the HTTP server.
 
 | Direction | Message | Notes |
 |---|---|---|
-| Client → Server | `{"type":"hello","token":"...","since":123}` | Authenticate with a bearer token. Server replies with a backlog of messages with `id > since`, then pushes live messages. `since` is exclusive; `since: 0` returns the full history (up to the store's cap of the most recent 5000 messages). Defaults to `0` if omitted. |
+| Client → Server | `{"type":"hello","token":"...","since":123}` | Authenticate with a bearer token. Server replies with a backlog of messages with `id > since`, then pushes live messages. `since` is exclusive; `since: 0` returns the full history (up to the store's cap of the most recent 5000 messages). Defaults to `0` if omitted. Optional `"admin": true` requests the admin view (all messages) — only honored for admin users; the Admin page sends it. |
 | Client → Server | `{"type":"send","to":"<user>","body":"...","reply_to":123}` | Send a message. `reply_to` is an **optional int** (the `id` of the message being replied to); omit it for a new thread. Optional `location` (`{"lat":...,"lon":...}`) and `recorded_at` fields are also accepted and stored. Server replies `{"type":"sent","id":...,"timestamp":...}`. |
 | Client → Server | `{"type":"ping"}` | Keepalive; server replies `{"type":"pong"}`. |
 | Server → Client | `{"type":"backlog","messages":[...]}` | Initial backlog (see `hello`). |
@@ -138,9 +138,11 @@ server accepts the same tokens as the HTTP server.
 
 Each message is `{"id","from","to","body","timestamp"}` (plus optional
 `reply_to`, `location`, `recorded_at`) in id order. `from` is always
-the authenticated user — you can't send as someone else. Non-admin
-users receive only their own inbox (`to == you`); admin users'
-connections receive **all** messages. Bodies are capped at 100,000
+the authenticated user — you can't send as someone else. Regular
+inbox connections receive only messages to/from you (`to == you` or
+`from == you`, including your sent messages) — even for admin users.
+Admin-view connections (the Admin page, which sends `"admin": true`
+in `hello`) receive **all** messages. Bodies are capped at 100,000
 characters.
 
 ### WSS example (Python, `websockets` package)

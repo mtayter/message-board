@@ -43,6 +43,7 @@ MAX_BODY_LEN = 100_000
 clients = {}
 # websocket connections for admin users (receive all messages)
 admin_clients = set()
+admin_view_clients = set()  # admin conns that requested Admin view
 # Message IDs already pushed via WS (to avoid dupes from the poller)
 pushed_ids = set()
 
@@ -82,7 +83,9 @@ def get_messages_for(user, since_id=0, is_admin=False):
     msgs = load_json(MESSAGES_FILE, [])
     if is_admin:
         return [m for m in msgs if m.get("id", 0) > since_id]
-    return [m for m in msgs if m.get("to") == user and m.get("id", 0) > since_id]
+    return [m for m in msgs
+            if m.get("id", 0) > since_id
+            and (m.get("to") == user or m.get("from") == user)]
 
 def append_message(from_user, to_user, body, reply_to=None, location=None, recorded_at=None):
     """Append a message, return the new message dict."""
@@ -113,7 +116,8 @@ async def broadcast(msg, exclude=None):
     plus all admin clients (who see everything)."""
     to_user = msg.get("to")
     targets = set(clients.get(to_user, set()))
-    targets.update(admin_clients)
+    targets.update(admin_view_clients)
+
     for ws in list(targets):
         if ws is not exclude:
             try:
@@ -145,6 +149,10 @@ async def handle_client(ws):
         clients.setdefault(username, set()).add(ws)
         # Track admin connections (they receive all messages)
         is_admin = bool(load_json(USERS_FILE, {}).get(username, {}).get("admin"))
+        # Admin view requested? Only the Admin page sends admin:true.
+        wants_admin_view = bool(hello.get("admin")) and is_admin
+        if wants_admin_view:
+            admin_view_clients.add(ws)
         if is_admin:
             admin_clients.add(ws)
 
@@ -154,7 +162,7 @@ async def handle_client(ws):
             since = int(since)
         except (ValueError, TypeError):
             since = 0
-        backlog = get_messages_for(username, since, is_admin=is_admin)
+        backlog = get_messages_for(username, since, is_admin=wants_admin_view)
         await ws.send(json.dumps({"type": "backlog", "messages": backlog}))
 
         # Handle incoming messages
@@ -197,6 +205,7 @@ async def handle_client(ws):
         if username and ws in clients.get(username, set()):
             clients[username].discard(ws)
         admin_clients.discard(ws)
+        admin_view_clients.discard(ws)
 
 async def poll_http_messages():
     """Poll messages.json for new HTTP-sent messages, push to WS clients."""
@@ -211,7 +220,8 @@ async def poll_http_messages():
                 continue
             # Push to connected WS clients for the recipient, plus admins
             targets = set(clients.get(to_user, set())) if to_user in clients else set()
-            targets.update(admin_clients)
+            targets.update(admin_view_clients)
+        
             if targets:
                 for ws in list(targets):
                     try:

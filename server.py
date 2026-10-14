@@ -475,7 +475,9 @@ INBOX_PAGE = """<!doctype html>
 <title>Message board</title>
 <style>
 body{font-family:system-ui,sans-serif;max-width:44rem;margin:2rem auto;padding:0 1rem;line-height:1.45}
-.msg{border:1px solid #ccc;border-radius:.5rem;padding:.6rem .8rem;margin:.6rem 0}
+.msg{border:1px solid #ccc;border-radius:.5rem;padding:.6rem .8rem;margin:.6rem 0;max-width:80%}
+.msg.sent{margin-left:auto;background:#d4edda;border-color:#a8d5ba}
+.msg.received{margin-right:auto;background:#f8f9fa}
 .meta{color:#666;font-size:.85rem}
 textarea{width:100%;height:5rem;font:inherit}
 input{font:inherit}
@@ -505,8 +507,10 @@ function render(){
   const box=document.getElementById('inbox');
   if(!messages.length){box.innerHTML='<p><i>No messages yet.</i></p>';return;}
   box.innerHTML=messages.map(function(m){
-    var other = (m.from === myUsername) ? 'to <b>'+esc(m.to)+'</b>' : 'from <b>'+esc(m.from)+'</b>';
-    return '<div class="msg"><div class="meta">#'+m.id+' &middot; '+other+
+    var isMine = (m.from === myUsername);
+    var other = isMine ? 'to <b>'+esc(m.to)+'</b>' : 'from <b>'+esc(m.from)+'</b>';
+    var cls = isMine ? 'msg sent' : 'msg received';
+    return '<div class="'+cls+'"><div class="meta">#'+m.id+' &middot; '+other+
       ' &middot; '+new Date(m.timestamp*1000).toLocaleString()+'</div><div>'+esc(m.body)+'</div></div>';
   }).join('');
 }
@@ -610,7 +614,9 @@ ADMIN_PAGE = """<!doctype html>
 <title>Message board &mdash; admin</title>
 <style>
 body{font-family:system-ui,sans-serif;max-width:44rem;margin:2rem auto;padding:0 1rem;line-height:1.45}
-.msg{border:1px solid #ccc;border-radius:.5rem;padding:.6rem .8rem;margin:.6rem 0}
+.msg{border:1px solid #ccc;border-radius:.5rem;padding:.6rem .8rem;margin:.6rem 0;max-width:80%}
+.msg.sent{margin-left:auto;background:#d4edda;border-color:#a8d5ba}
+.msg.received{margin-right:auto;background:#f8f9fa}
 .meta{color:#666;font-size:.85rem}
 </style></head><body>
 <h1>Message board &mdash; admin</h1>
@@ -654,7 +660,7 @@ function connectWss(token, since){
   const proto = (location.protocol === 'https:') ? 'wss://' : 'ws://';
   ws = new WebSocket(proto + location.host + '/board/ws');
   ws.onopen = function(){
-    ws.send(JSON.stringify({type:'hello', token:token, since:since}));
+    ws.send(JSON.stringify({type:'hello', token:token, since:since, admin:true}));
   };
   ws.onmessage = function(ev){
     let d;
