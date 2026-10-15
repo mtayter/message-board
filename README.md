@@ -11,14 +11,9 @@ Two servers share one JSON store (`messages.json`):
   retired (see below).
 - `ws_server.py` — real-time WebSocket server (needs the `websockets`
   package). This is the messaging API all clients use.
-
-## Note — `client.py` is being retired
-
-`client.py` is currently HTTP-only (`post` / `poll` against
-`/messages`). Against the live service those calls get 410 Gone.
-It has no WSS support. It is kept only for `mint-token` (see below);
-the `post` / `poll` / `whoami` commands are removed in the next
-cleanup step. Do not present it as a working messaging client.
+- `client.py` — mint-token-only CLI: exchanges a username + password
+  for a bearer token via `POST /login` (used by WSS clients). HTTP
+  messaging is retired, so it has no send/receive commands.
 
 ## Install (recommended)
 
@@ -199,10 +194,6 @@ python3 ws_server.py --port 8766   # needs the `websockets` package
 # 3. Message over WSS (see the WSS example above) — NOT over HTTP:
 #    GET/POST /messages return 410 Gone on the live service.
 ```
-
-Note: the packaged `client.py` still speaks the retired HTTP API
-(`post` / `poll` against `/messages`) and gets 410 Gone from the live
-service — see the note at the top; those commands are being removed.
 
 ## Curl examples
 
