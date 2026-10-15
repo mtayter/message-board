@@ -28,6 +28,13 @@
 #
 # Usage:
 #   ./install.sh [--non-interactive] [--config PATH] [--help]
+#   ./install.sh --role agent-listener [--non-interactive] [--help]
+#     Installs the agent-listener client (clients/agent-listener/) to
+#     ~/.local/share/message-board/ instead of the servers. Writes the
+#     listener config to ~/.config/message-board/agent-listener.env
+#     (BOARD_WS_URL / BOARD_URL), migrates an existing token/cursor from
+#     ~/hooks/state/ if present. Env: BOARD_WS_URL, BOARD_URL,
+#     MB_LISTENER_CONFIG. Does NOT touch the server units or server config.
 #
 # Self-contained: depends only on bash + python3 (+ the `websockets` package
 # for the WSS server). No helpers from any other repo.
@@ -37,10 +44,11 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NON_INTERACTIVE=0
+ROLE="server"
 CONFIG_FILE="${MB_CONFIG_FILE:-$HOME/.config/message-board/config.env}"
 
 usage() {
-    sed -n '1,35p' "$0"
+    sed -n '1,41p' "$0"
     exit 0
 }
 
@@ -49,11 +57,90 @@ while [ $# -gt 0 ]; do
         --non-interactive) NON_INTERACTIVE=1 ;;
         --config) CONFIG_FILE="$2"; shift ;;
         --config=*) CONFIG_FILE="${1#--config=}" ;;
+        --role) ROLE="$2"; shift ;;
+        --role=*) ROLE="${1#--role=}" ;;
         --help|-h) usage ;;
-        *) echo "unknown argument: $1" >&2; echo "usage: $0 [--non-interactive] [--config PATH] [--help]" >&2; exit 2 ;;
+        *) echo "unknown argument: $1" >&2; echo "usage: $0 [--non-interactive] [--config PATH] [--role agent-listener] [--help]" >&2; exit 2 ;;
     esac
     shift
 done
+
+# --- agent-listener role: install the client, not the servers -----------
+if [ "$ROLE" = "agent-listener" ]; then
+    command -v python3 >/dev/null || { echo "error: python3 is required" >&2; exit 1; }
+    if ! python3 -c "import websockets" 2>/dev/null \
+        && ! { [ -x "$HOME/.venv/bin/python" ] \
+            && "$HOME/.venv/bin/python" -c "import websockets" 2>/dev/null; }; then
+        echo "error: the listener needs the 'websockets' package." >&2
+        echo "  Debian/Ubuntu: sudo apt install python3-websockets" >&2
+        echo "  or:            pip install websockets" >&2
+        exit 1
+    fi
+    SRC="$REPO_DIR/clients/agent-listener"
+    [ -d "$SRC" ] || { echo "error: missing $SRC (run from the repo root)" >&2; exit 1; }
+    DEST="$HOME/.local/share/message-board"
+    mkdir -p "$DEST/state"
+    chmod 700 "$DEST" "$DEST/state"
+    cp "$SRC/board-listen.py" "$SRC/board-send.py" "$SRC/board-listen-loop.sh" "$DEST/"
+    chmod 755 "$DEST/board-listen.py" "$DEST/board-send.py" "$DEST/board-listen-loop.sh"
+    echo "Installed listener scripts to $DEST"
+    LCONFIG="${MB_LISTENER_CONFIG:-$HOME/.config/message-board/agent-listener.env}"
+    if [ -f "$LCONFIG" ]; then
+        echo "Listener config already exists — keeping it: $LCONFIG"
+    else
+        _WS="${BOARD_WS_URL:-}"
+        _URL="${BOARD_URL:-}"
+        if [ -z "$_WS" ] && [ -n "${MB_PUBLIC_HOST:-}" ]; then
+            _WS="wss://${MB_PUBLIC_HOST}/board/ws"
+        fi
+        if [ "$NON_INTERACTIVE" -eq 1 ]; then
+            [ -n "$_WS" ] || { echo "error: BOARD_WS_URL is required in --non-interactive mode (or set MB_PUBLIC_HOST)" >&2; exit 1; }
+        else
+            read -r -p "Board WebSocket URL [${_WS:-}]: " _in
+            _WS="${_in:-${_WS:-}}"
+            [ -n "$_WS" ] || { echo "error: board WebSocket URL must not be empty" >&2; exit 1; }
+            _URL_DEFAULT="${_WS/wss:\/\//https:\/\/}"
+            _URL_DEFAULT="${_URL_DEFAULT/ws:\/\//http:\/\/}"
+            _URL_DEFAULT="${_URL_DEFAULT%/ws}"
+            read -r -p "Board web URL [${_URL_DEFAULT}]: " _in
+            _URL="${_in:-${_URL_DEFAULT}}"
+        fi
+        if [ -z "$_URL" ]; then
+            _URL="${_WS/wss:\/\//https:\/\/}"
+            _URL="${_URL/ws:\/\//http:\/\/}"
+            _URL="${_URL%/ws}"
+        fi
+        mkdir -p "$(dirname "$LCONFIG")"
+        TMP_LCONFIG="$LCONFIG.tmp.$$"
+        (
+            umask 077
+            printf '# Agent-listener config — written by install.sh --role agent-listener.\n# Paths/URLs only; never a password or token.\nBOARD_WS_URL=%s\nBOARD_URL=%s\n' "$_WS" "$_URL" > "$TMP_LCONFIG"
+            chmod 600 "$TMP_LCONFIG"
+        )
+        mv "$TMP_LCONFIG" "$LCONFIG"
+        echo "Wrote listener config: $LCONFIG (mode 0600)"
+    fi
+    # Migrate an existing token/cursor from the legacy hooks state dir,
+    # if present and the new state files do not exist yet. Never overwrite.
+    for _pair in "message-board.token" "message-board.last"; do
+        _old="$HOME/hooks/state/$_pair"
+        _new="$DEST/state/$_pair"
+        if [ -f "$_old" ] && [ ! -f "$_new" ]; then
+            cp "$_old" "$_new"
+            chmod 600 "$_new"
+            echo "Migrated $_pair from ~/hooks/state/ (kept the original)"
+        fi
+    done
+    echo
+    echo "Done. Spawn path (side chat spawns this loop ONCE, backgrounded):"
+    echo "  $DEST/board-listen-loop.sh"
+    echo "Send a message with:  python3 $DEST/board-send.py <to> <body> [reply_to]"
+    echo "See clients/agent-listener/README.md for the design + onboarding."
+    exit 0
+fi
+if [ "$ROLE" != "server" ]; then
+    echo "unknown --role: $ROLE (expected: server, agent-listener)" >&2; exit 2
+fi
 
 # --- dependency checks (fail early, before prompting) ---
 command -v python3 >/dev/null || { echo "error: python3 is required" >&2; exit 1; }

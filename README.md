@@ -22,6 +22,13 @@ Two servers share one JSON store (`messages.json`):
   build config (`BOARD_PEER_USERNAME` / `BOARD_USERNAME`); see
   `clients/watch/README.md`. The old standalone relay transport was
   retired and not carried over.
+- `clients/agent-listener/` — agent-side WSS listener + sender for
+  long-running agents: one-shot `board-listen.py` / `board-send.py`
+  plus `board-listen-loop.sh` (spawn once). Install with
+  `./install.sh --role agent-listener`; see
+  `clients/agent-listener/README.md` for the protocol, the
+  side-chat/listener/sender design, and the respond-only-when-substantive
+  rule.
 
 ## Install (recommended)
 
