@@ -12,9 +12,6 @@ users.json
 tokens.json
 sessions.json
 
-# Internal packaging notes — never publish.
-SUMMARY.md
-
 # Local installer config / secrets — NEVER commit. install.sh writes the
 # non-secret settings to ~/.config/message-board/config.env (outside the
 # repo); these patterns are belt-and-braces for anyone who points config
