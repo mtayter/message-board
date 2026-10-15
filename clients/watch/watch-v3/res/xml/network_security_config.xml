@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- No cleartext exception: the watch app talks to the board over
+     TLS-only WSS. Plain-HTTP / ws:// board connections are not supported. -->
+<network-security-config>
+</network-security-config>

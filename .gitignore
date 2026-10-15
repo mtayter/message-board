@@ -20,3 +20,12 @@ config.env
 .env
 *.pem
 *.key
+
+# Watch client (clients/watch/) — generated build config (holds the board
+# password), signing keys, and build outputs. NEVER commit.
+clients/watch/**/Defaults.java
+clients/watch/**/*.apk
+clients/watch/**/*.idsig
+clients/watch/**/*.keystore
+clients/watch/**/*.jks
+clients/watch/**/out/

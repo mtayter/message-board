@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The whole app: one screen, no scrolling, no setup. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:gravity="center"
+    android:background="#111111"
+    android:padding="12dp">
+
+    <TextView
+        android:id="@+id/listen_state"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:minHeight="16dp"
+        android:text=""
+        android:textColor="#4CAF50"
+        android:textSize="12sp" />
+
+    <Button
+        android:id="@+id/talk"
+        android:layout_width="160dp"
+        android:layout_height="75dp"
+        android:layout_marginTop="4dp"
+        android:background="@drawable/talk_button_bg"
+        android:text="HOLD TO TALK"
+        android:textColor="#FFFFFF"
+        android:textSize="15sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:gravity="center"
+        android:minLines="2"
+        android:maxLines="3"
+        android:text=""
+        android:textColor="#FFFFFF"
+        android:textSize="12sp" />
+
+    <Button
+        android:id="@+id/stop_tts"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:minHeight="36dp"
+        android:text="Stop voice"
+        android:textSize="11sp" />
+</LinearLayout>

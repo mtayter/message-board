@@ -15,6 +15,14 @@ Two servers share one JSON store (`messages.json`):
   for a bearer token via `POST /login` (used by WSS clients). HTTP
   messaging is retired, so it has no send/receive commands.
 
+## Clients
+
+- `clients/watch/` — Wear OS voice app: hold-to-talk from a watch,
+  board WSS both directions. Peer/self identities come from its own
+  build config (`BOARD_PEER_USERNAME` / `BOARD_USERNAME`); see
+  `clients/watch/README.md`. The old standalone relay transport was
+  retired and not carried over.
+
 ## Install (recommended)
 
 ```bash

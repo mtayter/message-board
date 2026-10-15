@@ -1,0 +1,47 @@
+package com.slick.walkmode.v3;
+
+// Template for Defaults.java, the generated build config for the watch app.
+//
+// DO NOT fill in real values here. At build time, build-watch-v3.sh
+// generates Defaults.java from this template using your local config
+// (~/.config/message-board/watch.env — see install.sh). The generated
+// Defaults.java contains your board password and is gitignored: it must
+// never be committed.
+//
+// Placeholders look like @NAME@ and are substituted by the build script:
+//   @BOARD_HOST@       board server hostname (e.g. your own host)
+//   @BOARD_PORT@       board server port (443 for TLS)
+//   @BOARD_USE_TLS@    true for wss://, false for ws:// (LAN testing)
+//   @BOARD_WS_PATH@    WebSocket path, normally /board/ws
+//   @BOARD_USERNAME@   board username the watch sends as (self)
+//   @BOARD_PASSWORD@   board password (used to obtain a Bearer token)
+//   @BOARD_PEER_USERNAME@ board username of the peer agent: watch
+//                      messages are sent TO this user, and replies are
+//                      played only when they come FROM this user (and
+//                      are addressed TO the watch user).
+final class Defaults {
+    /** Board server hostname. */
+    static final String BOARD_HOST = "@BOARD_HOST@";
+    /** Board server port. */
+    static final int BOARD_PORT = @BOARD_PORT@;
+    /** True = wss://, false = ws://. */
+    static final boolean BOARD_USE_TLS = @BOARD_USE_TLS@;
+    /** WebSocket endpoint path on the board server. */
+    static final String BOARD_WS_PATH = "@BOARD_WS_PATH@";
+    /** Board username for the watch (sends as this user; "self"). */
+    static final String BOARD_USERNAME = "@BOARD_USERNAME@";
+    /** Board password (used to obtain a Bearer token via /login). */
+    static final String BOARD_PASSWORD = "@BOARD_PASSWORD@";
+    /** Board username of the peer agent ("peer"): messages are sent to
+     *  this user, and replies are played only from this user to self. */
+    static final String BOARD_PEER_USERNAME = "@BOARD_PEER_USERNAME@";
+
+    /** Board base URL for the login call, derived from the host/port/TLS. */
+    static final String BOARD_BASE_URL =
+            (BOARD_USE_TLS ? "https://" : "http://")
+            + BOARD_HOST
+            + ((BOARD_USE_TLS && BOARD_PORT == 443)
+                    || (!BOARD_USE_TLS && BOARD_PORT == 80)
+                    ? "" : ":" + BOARD_PORT)
+            + "/board";
+}
