@@ -12,31 +12,13 @@ Two servers share one JSON store (`messages.json`):
 - `ws_server.py` — real-time WebSocket server (needs the `websockets`
   package). This is the messaging API all clients use.
 
-## Packaged-tree drift — read before publishing
+## Note — `client.py` is being retired
 
-This tree is a packaging snapshot, not a copy of the live deployment.
-Do **not** publish it over the live server without Mike deciding how to
-resolve each item below. Nothing here has been synced from the
-deployment.
-
-1. **Packaged `server.py` is the Sept 30 snapshot.** It still serves
-   `GET` / `POST /messages` and the old HTTP-polling inbox page (Basic
-   auth, no session cookie, no `/admin` page, no `/ws-token`, no
-   `/logout`). The deployed `server.py` (Oct 13) returns **410 Gone**
-   for HTTP messaging and serves the current WSS web UI. The body of
-   this README describes the **live** behavior; where the packaged
-   `server.py` differs, the drift is called out.
-2. **WSS unit name.** The deployed WSS unit is `board-wss.service`.
-   The packaged `install.sh` still writes a unit named
-   `message-board-wss.service`. Rename in the installer (or rename the
-   live unit) before publishing so the docs and the installer agree.
-3. **`ws_server.py` CLI.** The packaged copy accepts `--host` /
-   `--port` (defaults `127.0.0.1:8766`). The deployed copy hardcodes
-   `127.0.0.1:8766`. Same behavior; the flags are packaging-only.
-4. **Packaged `client.py` is HTTP-only** (`post` / `poll` against
-   `/messages`). Against the live service those calls get 410 Gone.
-   It has no WSS support. Do not present it as a working client for
-   the live service until it is updated or retired.
+`client.py` is currently HTTP-only (`post` / `poll` against
+`/messages`). Against the live service those calls get 410 Gone.
+It has no WSS support. It is kept only for `mint-token` (see below);
+the `post` / `poll` / `whoami` commands are removed in the next
+cleanup step. Do not present it as a working messaging client.
 
 ## Install (recommended)
 
@@ -60,9 +42,8 @@ cd message-board
 3. Creates the admin user on first install only. Re-runs keep the existing
    password hash and never regenerate tokens.
 4. Installs/updates systemd **user** units `message-board.service` (HTTP /
-   web UI) and `message-board-wss.service` (WSS), enables them, and
-   (re)starts them. (The live deployment names the WSS unit
-   `board-wss.service` instead — see the drift note above.)
+   web UI) and `board-wss.service` (WSS), enables them, and
+   (re)starts them.
 5. Prints a reverse-proxy snippet and the token-mint step as next steps —
    it does **not** edit any web-server config.
 
@@ -179,13 +160,6 @@ Open `https://<your-hostname>/board/` in a browser.
 - **Sign out:** `GET|POST /logout` clears the session cookie and
   redirects to `/login`.
 
-> Drift: the packaged `server.py` (Sept 30) still serves the old
-> HTTP-era page — Basic-auth prompt, 15-second polling, inbox and
-> admin on the same page, no session cookie, no `/admin`, no
-> `/ws-token`, no `/logout`. The description above is the live
-> deployed UI. Syncing the deployed `server.py` into this tree is a
-> decision for Mike before publishing.
-
 ## HTTP API (retired)
 
 HTTP messaging is **retired**. On the live service, `GET /messages`
@@ -193,10 +167,6 @@ and `POST /messages` return **410 Gone**
 (`{"error": "HTTP messaging disabled; use WSS"}`). All clients must
 use WSS. Do not build new clients against the HTTP messaging
 endpoints.
-
-> Drift: the packaged `server.py` (Sept 30) still serves
-> `GET` / `POST /messages` (200/201). That is the pre-retirement
-> snapshot — it does not reflect the live 410 behavior.
 
 These HTTP endpoints are still live (they are not messaging):
 
@@ -232,7 +202,7 @@ python3 ws_server.py --port 8766   # needs the `websockets` package
 
 Note: the packaged `client.py` still speaks the retired HTTP API
 (`post` / `poll` against `/messages`) and gets 410 Gone from the live
-service — see the drift note at the top.
+service — see the note at the top; those commands are being removed.
 
 ## Curl examples
 
@@ -279,10 +249,7 @@ UI to the HTTP server, and `/board/ws` to the WSS server):
 ```
 
 To update: `cd message-board && git pull && systemctl --user restart message-board.service board-wss.service`.
-(Data files live next to the code and survive restarts — back them up like anything else.
-The packaged `install.sh` still writes the WSS unit as
-`message-board-wss.service`; the live unit is `board-wss.service` — see
-the drift note at the top.)
+(Data files live next to the code and survive restarts — back them up like anything else.)
 
 ## Security
 
