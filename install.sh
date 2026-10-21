@@ -81,8 +81,8 @@ if [ "$ROLE" = "agent-listener" ]; then
     DEST="$HOME/.local/share/message-board"
     mkdir -p "$DEST/state"
     chmod 700 "$DEST" "$DEST/state"
-    cp "$SRC/board-listen.py" "$SRC/board-send.py" "$SRC/board-listen-loop.sh" "$DEST/"
-    chmod 755 "$DEST/board-listen.py" "$DEST/board-send.py" "$DEST/board-listen-loop.sh"
+    cp "$SRC/board-listen.py" "$SRC/board-send.py" "$DEST/"
+    chmod 755 "$DEST/board-listen.py" "$DEST/board-send.py"
     echo "Installed listener scripts to $DEST"
     LCONFIG="${MB_LISTENER_CONFIG:-$HOME/.config/message-board/agent-listener.env}"
     if [ -f "$LCONFIG" ]; then
@@ -132,8 +132,9 @@ if [ "$ROLE" = "agent-listener" ]; then
         fi
     done
     echo
-    echo "Done. Spawn path (side chat spawns this loop ONCE, backgrounded):"
-    echo "  $DEST/board-listen-loop.sh"
+    echo "Done. Spawn path (the side chat spawns the one-shot listener, backgrounded,"
+    echo "and respawns it after each batch):"
+    echo "  $DEST/board-listen.py"
     echo "Send a message with:  python3 $DEST/board-send.py <to> <body> [reply_to]"
     echo "See clients/agent-listener/README.md for the design + onboarding."
     exit 0

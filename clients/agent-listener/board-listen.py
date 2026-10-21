@@ -5,7 +5,7 @@ receives live messages, prints them to stdout, exits.
 
 Stdout is the wake handoff: the owning side chat sees each message as
 it arrives. The listener is one-shot by design (it exits after
-delivering a batch) — board-listen-loop.sh respawns it. The side chat
+delivering a batch) — the owning side chat respawns it. The side chat
 owns respawn after a VM refresh; nothing here polls listener health.
 
 Config (all from config file or environment, nothing hardcoded):

@@ -68,11 +68,6 @@ public class BoardWssClient {
         mHandler = handler;
     }
 
-    /** Update the message handler (e.g., when RelayService takes over from MainActivity). */
-    public void setHandler(MessageHandler handler) {
-        mHandler = handler;
-    }
-
     /** Send a message via WSS. Returns true if the send was written successfully.
      *  Does NOT wait for the sent-ack (the read loop handles it asynchronously).
      *  This avoids consuming push messages while waiting for the ack.
