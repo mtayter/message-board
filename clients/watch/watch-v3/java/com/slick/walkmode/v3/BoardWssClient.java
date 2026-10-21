@@ -52,6 +52,10 @@ public class BoardWssClient {
     private InputStream mIn;
     private OutputStream mOut;
     private volatile boolean mRunning = false;
+    /** Serializes frame writes: with one shared connection, sends (from
+     *  the activity's send thread) and pongs (from the read thread) must
+     *  never interleave bytes on the wire. */
+    private final Object mWriteLock = new Object();
 
     public BoardWssClient(String host, int port, boolean useTls, String path,
                           String token, long since, MessageHandler handler) {
@@ -232,38 +236,40 @@ public class BoardWssClient {
     // --- WebSocket framing (RFC 6455) ---
 
     private void sendText(String text) throws Exception {
-        byte[] payload = text.getBytes(StandardCharsets.UTF_8);
-        ByteArrayOutputStream frame = new ByteArrayOutputStream();
+        synchronized (mWriteLock) {
+            byte[] payload = text.getBytes(StandardCharsets.UTF_8);
+            ByteArrayOutputStream frame = new ByteArrayOutputStream();
 
-        frame.write(0x81); // FIN + text opcode
+            frame.write(0x81); // FIN + text opcode
 
-        // Masked, with length
-        int len = payload.length;
-        if (len < 126) {
-            frame.write(0x80 | len);
-        } else if (len < 65536) {
-            frame.write(0x80 | 126);
-            frame.write((len >> 8) & 0xFF);
-            frame.write(len & 0xFF);
-        } else {
-            frame.write(0x80 | 127);
-            for (int i = 7; i >= 0; i--) {
-                frame.write((len >> (8 * i)) & 0xFF);
+            // Masked, with length
+            int len = payload.length;
+            if (len < 126) {
+                frame.write(0x80 | len);
+            } else if (len < 65536) {
+                frame.write(0x80 | 126);
+                frame.write((len >> 8) & 0xFF);
+                frame.write(len & 0xFF);
+            } else {
+                frame.write(0x80 | 127);
+                for (int i = 7; i >= 0; i--) {
+                    frame.write((len >> (8 * i)) & 0xFF);
+                }
             }
+
+            // Masking key
+            byte[] mask = new byte[4];
+            new Random().nextBytes(mask);
+            frame.write(mask);
+
+            // Masked payload
+            for (int i = 0; i < payload.length; i++) {
+                frame.write(payload[i] ^ mask[i % 4]);
+            }
+
+            mOut.write(frame.toByteArray());
+            mOut.flush();
         }
-
-        // Masking key
-        byte[] mask = new byte[4];
-        new Random().nextBytes(mask);
-        frame.write(mask);
-
-        // Masked payload
-        for (int i = 0; i < payload.length; i++) {
-            frame.write(payload[i] ^ mask[i % 4]);
-        }
-
-        mOut.write(frame.toByteArray());
-        mOut.flush();
     }
 
     private String readTextFrame() throws Exception {
@@ -319,17 +325,19 @@ public class BoardWssClient {
     }
 
     private void sendPong(byte[] payload) throws Exception {
-        ByteArrayOutputStream frame = new ByteArrayOutputStream();
-        frame.write(0x8A); // FIN + pong opcode
-        frame.write(0x80 | payload.length); // masked
-        byte[] mask = new byte[4];
-        new Random().nextBytes(mask);
-        frame.write(mask);
-        for (int i = 0; i < payload.length; i++) {
-            frame.write(payload[i] ^ mask[i % 4]);
+        synchronized (mWriteLock) {
+            ByteArrayOutputStream frame = new ByteArrayOutputStream();
+            frame.write(0x8A); // FIN + pong opcode
+            frame.write(0x80 | payload.length); // masked
+            byte[] mask = new byte[4];
+            new Random().nextBytes(mask);
+            frame.write(mask);
+            for (int i = 0; i < payload.length; i++) {
+                frame.write(payload[i] ^ mask[i % 4]);
+            }
+            mOut.write(frame.toByteArray());
+            mOut.flush();
         }
-        mOut.write(frame.toByteArray());
-        mOut.flush();
     }
 
     private void readFully(byte[] buf) throws Exception {

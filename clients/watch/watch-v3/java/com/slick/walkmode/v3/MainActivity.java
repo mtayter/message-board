@@ -29,8 +29,6 @@ import java.util.ArrayList;
  */
 public class MainActivity extends Activity {
     private static final String PREFS = "walkmode_v3";
-    /** Singleton WSS connection — ensures only one is open at a time. */
-    private static BoardWssClient activeWss = null;
 
     private SpeechRecognizer recognizer;
     private boolean listening = false;
@@ -233,103 +231,55 @@ public class MainActivity extends Activity {
         }
         new Thread(new Runnable() {
             @Override public void run() {
-                // WSS-only: open one connection, send, then listen for replies
-                // on the SAME connection. No HTTP, no sharing, no handoff.
-                // Close any existing connection first (prevents duplicates).
-                synchronized (MainActivity.class) {
-                    if (activeWss != null) {
-                        try { activeWss.stop(); } catch (Exception e) {}
-                        activeWss = null;
-                    }
-                }
-                BoardWssClient wss = openWssConnection();
+                // Single shared WSS connection, owned by RelayService:
+                // arm the service first — it opens the connection and
+                // publishes it in WssHolder — then send through that same
+                // connection. MainActivity never opens its own connection
+                // and never speaks replies; the service's handler is the
+                // only speaker. (Previously this code opened a second
+                // connection here with its own speak handler, so every
+                // reply was spoken twice.)
+                RelayService.extendWatch(MainActivity.this);
+                BoardWssClient wss = waitForSharedWss();
                 if (wss == null) {
                     setStatus("You: " + text + "\nCouldn't reach the server via WSS.");
                     return;
                 }
-                synchronized (MainActivity.class) {
-                    activeWss = wss;
-                }
 
-                // Send via WSS — prefix marks it as from the watch so the
-                // agent knows to send a quick "on it" for longer responses.
-                // Location is latest async GPS fix (may be null if no fix yet).
-                // RecordedAt is when the user lifted their finger (for latency).
+                // Send via the shared WSS connection — prefix marks it as
+                // from the watch so the agent knows to send a quick "on it"
+                // for longer responses. Location is the latest async GPS
+                // fix (may be null if no fix yet). RecordedAt is when the
+                // user lifted their finger (for latency).
                 org.json.JSONObject location = getLatestLocation();
                 if (!wss.sendMessage(Defaults.BOARD_PEER_USERNAME, "(from watch) " + text, null,
                         location, recordingEndedAt)) {
-                    wss.stop();
-                    synchronized (MainActivity.class) {
-                        if (activeWss == wss) activeWss = null;
-                    }
                     setStatus("You: " + text + "\nWSS send failed.");
                     return;
                 }
 
                 setListenState("Sent — listening for " + Defaults.BOARD_PEER_USERNAME + "…");
                 holdScreenOn();
-                // Arm the background listener: keeps listening after the
-                // foreground window closes, and drives the "Listening..." UI.
-                RelayService.extendWatch(MainActivity.this);
-
-                // Listen for replies on the SAME WSS connection (2 min max).
-                // Each reply extends by 90s. This avoids any handoff race.
-                long windowEnd = System.currentTimeMillis() + 2 * 60 * 1000;
-                final long[] sinceId = {getSinceId()};
-
-                wss.setHandler(new BoardWssClient.MessageHandler() {
-                    // In-memory dedup for this session (handles backlog+push duplicates)
-                    final java.util.Set<Long> playedIds = new java.util.HashSet<Long>();
-                    @Override public void onMessage(org.json.JSONObject msg) {
-                        try {
-                            long id = msg.optLong("id", 0);
-                            String from = msg.optString("from", "");
-                            String body = msg.optString("body", "");
-                            // Update since (for next hello's backlog)
-                            if (id > sinceId[0]) {
-                                sinceId[0] = id;
-                                saveSinceId(id);
-                            }
-                            if (!Defaults.BOARD_PEER_USERNAME.equals(from)) return;
-                            // Skip if already played in this session
-                            if (!playedIds.add(id)) return;
-                            String spoken = body.trim();
-                            if (spoken.isEmpty()) return;
-                            TtsHelper.get(MainActivity.this).speak(spoken);
-                        } catch (Exception e) {
-                            android.util.Log.w("SlickWalk", "WSS handler: " + e.getMessage());
-                        }
-                    }
-                    @Override public void onClose() {}
-                });
-
-                // Blocking read loop (2 min, extendable on reply)
-                // Note: This is simplified; a full impl would extend windowEnd on reply.
-                // For now, 2 min fixed window.
-                Thread reader = new Thread(new Runnable() {
-                    @Override public void run() { wss.startReading(); }
-                });
-                reader.start();
-                while (reader.isAlive() && System.currentTimeMillis() < windowEnd) {
-                    try { Thread.sleep(500); } catch (InterruptedException e) { break; }
-                }
-                wss.stop();
-                synchronized (MainActivity.class) {
-                    if (activeWss == wss) activeWss = null;
-                }
-                try { reader.join(2000); } catch (InterruptedException e) {}
-                setListenState("Done listening.");
-            }
-
-            private long getSinceId() {
-                return MainActivity.this.getSharedPreferences("walkmode_v3", MODE_PRIVATE)
-                        .getLong("since_id", 0);
-            }
-            private void saveSinceId(long id) {
-                MainActivity.this.getSharedPreferences("walkmode_v3", MODE_PRIVATE)
-                        .edit().putLong("since_id", id).apply();
+                // The service keeps listening on the shared connection
+                // (2-min window, +90s per reply) and speaks any reply;
+                // ACTION_STATE / ACTION_REPLY broadcasts drive the UI.
             }
         }).start();
+    }
+
+    /**
+     * Wait for RelayService to publish the shared WSS connection in
+     * WssHolder (it appears once the hello handshake completes). Bounded:
+     * if the service can't connect, the send fails instead of hanging.
+     */
+    private BoardWssClient waitForSharedWss() {
+        long deadline = System.currentTimeMillis() + 15 * 1000;
+        while (System.currentTimeMillis() < deadline) {
+            BoardWssClient c = WssHolder.get();
+            if (c != null) return c;
+            try { Thread.sleep(100); } catch (InterruptedException e) { return null; }
+        }
+        return WssHolder.get();
     }
 
     private void setListenState(final String s) {
@@ -337,47 +287,6 @@ public class MainActivity extends Activity {
             @Override public void run() { listenState.setText(s); }
         });
     }
-
-    /**
-     * Open a WSS connection to the board. Returns null on failure.
-     * The caller is responsible for storing it in WssHolder and closing it.
-     */
-    private BoardWssClient openWssConnection() {
-        try {
-            String username = Defaults.BOARD_USERNAME;
-            String password = Defaults.BOARD_PASSWORD;
-            String token = BoardClient.getToken(username, password);
-            if (token == null) return null;
-
-            long sinceId = getSharedPreferences("walkmode_v3", MODE_PRIVATE)
-                    .getLong("since_id", 0);
-
-            // Split-horizon DNS (if you run one) handles LAN vs WAN: the
-            // board host resolves to your LAN IP on Wi-Fi, public IP
-            // elsewhere. No LAN probe needed.
-            String host = Defaults.BOARD_HOST;
-            int port = Defaults.BOARD_PORT;
-            boolean useTls = Defaults.BOARD_USE_TLS;
-            String path = Defaults.BOARD_WS_PATH;
-
-            // No handler yet; RelayService will set it when it takes over.
-            // For now, use a no-op handler.
-            BoardWssClient.MessageHandler noop = new BoardWssClient.MessageHandler() {
-                @Override public void onMessage(org.json.JSONObject msg) {}
-                @Override public void onClose() {}
-            };
-
-            BoardWssClient client = new BoardWssClient(host, port, useTls, path,
-                    token, sinceId, noop);
-            client.connectAndHello();
-            return client;
-        } catch (Exception e) {
-            android.util.Log.w("SlickWalk", "WSS open failed: " + e.getMessage());
-            return null;
-        }
-    }
-
-
 
     private void setStatus(final String s) {
         runOnUiThread(new Runnable() {

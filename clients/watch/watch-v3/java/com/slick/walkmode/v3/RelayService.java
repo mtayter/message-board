@@ -23,9 +23,14 @@ import java.util.List;
 /**
  * Foreground service that listens for the peer agent's reply after the user sends a
  * message. There is no manual start/stop: every successful send arms a
- * listen window (LISTEN_TIMEOUT_MS); each reply spoken extends it by
- * REPLY_GRACE_MS; then the service stops itself. The peer never initiates,
- * so listening only ever follows a send.
+ * listen window (LISTEN_WINDOW_MS — 2 minutes, the battery constraint);
+ * each reply spoken extends it by REPLY_GRACE_MS; then the service stops
+ * itself. The peer never initiates, so listening only ever follows a send.
+ *
+ * This service owns the watch's single WSS connection (published in
+ * WssHolder once connected): MainActivity sends through that same
+ * connection and never opens its own, and this service's handler is the
+ * only place replies are spoken.
  *
  * Session semantics: sinceId is persisted, so each reply is spoken at most
  * once. Replies older than 15 minutes are skipped (stale backlog after a
@@ -42,8 +47,9 @@ public class RelayService extends Service {
     private static final String CHANNEL = "slick_walk";
     private static final String PREFS = "walkmode_v3";
     private static final long STALE_SECS = 15 * 60;
-    /** How long to listen for a reply after a send with no response. */
-    private static final long LISTEN_TIMEOUT_MS = 15 * 60 * 1000;
+    /** How long to listen for a reply after a send with no response.
+     *  Two minutes is the battery constraint — not a quarter hour. */
+    private static final long LISTEN_WINDOW_MS = 2 * 60 * 1000;
     /** Extra listen time after each reply (covers multi-part replies). */
     private static final long REPLY_GRACE_MS = 90 * 1000;
 
@@ -58,12 +64,59 @@ public class RelayService extends Service {
      *  stale token never survives a network switch. */
     private ConnectivityManager.NetworkCallback networkCallback;
 
+    /** Persisted set of already-spoken message IDs (dedup). */
+    private static final String KEY_PLAYED_IDS = "played_ids";
+    private static final int MAX_PLAYED_IDS = 300;
+    private final java.util.Set<Long> playedIds = new java.util.HashSet<Long>();
+    private boolean playedIdsLoaded = false;
+
     /**
-     * Arm (or extend) the reply listen window. Call after a message was
-     * successfully sent via board WSS.
+     * Persistent played-ID dedup: returns true the first time an ID is
+     * seen (the caller should speak it) and false for any redelivery —
+     * reconnect backlog, service restart — so a reply is never spoken
+     * twice. The set is persisted in prefs, trimmed to the newest
+     * MAX_PLAYED_IDS. Messages without an ID (id &lt;= 0) are never deduped.
+     */
+    private boolean markPlayedIfNew(SharedPreferences prefs, long id) {
+        if (id <= 0) return true;
+        synchronized (playedIds) {
+            if (!playedIdsLoaded) {
+                String saved = prefs.getString(KEY_PLAYED_IDS, "");
+                if (saved != null && !saved.isEmpty()) {
+                    for (String part : saved.split(",")) {
+                        try { playedIds.add(Long.parseLong(part.trim())); }
+                        catch (NumberFormatException ignored) {}
+                    }
+                }
+                playedIdsLoaded = true;
+            }
+            if (playedIds.contains(id)) return false;
+            playedIds.add(id);
+            java.util.List<Long> sorted = new java.util.ArrayList<Long>(playedIds);
+            java.util.Collections.sort(sorted);
+            if (sorted.size() > MAX_PLAYED_IDS) {
+                sorted = sorted.subList(sorted.size() - MAX_PLAYED_IDS, sorted.size());
+                playedIds.clear();
+                playedIds.addAll(sorted);
+            }
+            StringBuilder sb = new StringBuilder();
+            for (Long v : sorted) {
+                if (sb.length() > 0) sb.append(',');
+                sb.append(v.longValue());
+            }
+            prefs.edit().putString(KEY_PLAYED_IDS, sb.toString()).apply();
+            return true;
+        }
+    }
+
+    /**
+     * Arm (or restart) the reply listen window and make sure the service
+     * is running. MainActivity calls this right before sending through
+     * the shared connection, so the service is up — and its connection
+     * published in WssHolder — when the send goes out.
      */
     public static void extendWatch(Context c) {
-        long until = System.currentTimeMillis() + LISTEN_TIMEOUT_MS;
+        long until = System.currentTimeMillis() + LISTEN_WINDOW_MS;
         watchUntil = until;
         c.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                 .putLong("watch_until", until)
@@ -147,12 +200,11 @@ public class RelayService extends Service {
         final String password = Defaults.BOARD_PASSWORD;
         long sinceId = startSince;
 
-        // Single WSS session for the entire listen duration (up to watchUntil).
-        // No 2-minute window; the shared WSS stays open for all replies.
-        // If WSS fails, retry until watchUntil expires.
+        // One shared WSS session at a time for the listen window
+        // (watchUntil). If WSS fails or drops, retry until the window expires.
         while (polling && System.currentTimeMillis() <= watchUntil) {
             // WSS-only (no HTTP). If WSS fails, wait and retry.
-            boolean wssOk = wssListen(username, password, sinceId, prefs, watchUntil);
+            boolean wssOk = wssListen(username, password, sinceId, prefs);
             if (!wssOk) {
                 // WSS failed; wait before retry
                 try { Thread.sleep(4000); } catch (InterruptedException ie) { break; }
@@ -169,19 +221,18 @@ public class RelayService extends Service {
     }
 
     /**
-     * Open WSS, receive push messages until windowEnd or error.
-     * Returns true if WSS ran (even if no messages), false if WSS failed to connect.
-     * Each message from the peer is spoken immediately (no poll delay).
-     */
-    /**
-     * WSS push listener: opens a fresh WSS connection, receives messages
-     * via push until windowEnd or error. Simple and robust: no shared state.
-     * Returns true if WSS ran, false if it failed to connect.
+     * WSS push listener: opens the watch's single shared WSS connection
+     * for this listen session and publishes it in WssHolder once the hello
+     * handshake completes. This service owns the connection — MainActivity
+     * sends through the holder reference and never opens its own — and
+     * this handler is the only place replies are spoken. Receives push
+     * messages until the listen window (watchUntil) expires or the
+     * connection drops. Returns true if the session connected, false if
+     * it failed to connect.
      */
     private boolean wssListen(String username, String password, long startSince,
-                              SharedPreferences prefs, long initialWindowEnd) {
+                              SharedPreferences prefs) {
         final long[] sinceId = {startSince};
-        final long[] windowEnd = {initialWindowEnd};
 
         String token = BoardClient.getToken(username, password);
         if (token == null) {
@@ -216,10 +267,11 @@ public class RelayService extends Service {
                     if (!Defaults.BOARD_USERNAME.equals(to)) return;
                     long nowSecs = System.currentTimeMillis() / 1000;
                     if (timestamp > 0 && nowSecs - timestamp > STALE_SECS) return;
-                    String text = body.trim();
-                    if (text.isEmpty()) return;
-                    String spoken = text.trim();
+                    String spoken = body.trim();
                     if (spoken.isEmpty()) return;
+                    // Persistent dedup: never speak the same reply twice,
+                    // even if a reconnect redelivers it from the backlog.
+                    if (!markPlayedIfNew(prefs, id)) return;
 
                     prefs.edit()
                             .putString("last_reply", spoken)
@@ -238,15 +290,13 @@ public class RelayService extends Service {
                         }
                     });
 
-                    // Extend windows on reply (90s grace, battery-friendly)
+                    // Extend the listen window on reply (90s grace,
+                    // battery-friendly). watchUntil is the single window
+                    // source of truth (static + persisted).
                     long newUntil = System.currentTimeMillis() + REPLY_GRACE_MS;
                     if (newUntil > watchUntil) {
                         watchUntil = newUntil;
                         prefs.edit().putLong("watch_until", newUntil).apply();
-                    }
-                    long newWindowEnd = System.currentTimeMillis() + REPLY_GRACE_MS;
-                    if (newWindowEnd > windowEnd[0]) {
-                        windowEnd[0] = newWindowEnd;
                     }
                 } catch (Exception e) {
                     android.util.Log.w("SlickWalk", "WSS handler: " + e.getMessage());
@@ -258,20 +308,34 @@ public class RelayService extends Service {
         BoardWssClient client = new BoardWssClient(host, port, useTls, path,
                 token, sinceId[0], handler);
         final BoardWssClient wssClient = client;
+        final boolean[] connected = {false};
 
         Thread wssThread = new Thread(new Runnable() {
-            @Override public void run() { wssClient.run(); }
+            @Override public void run() {
+                try {
+                    wssClient.connectAndHello();
+                    connected[0] = true;
+                    // Publish the shared connection: from here on, sends
+                    // go through this same client via WssHolder.
+                    WssHolder.set(wssClient);
+                    wssClient.startReading();
+                } catch (Exception e) {
+                    android.util.Log.w("SlickWalk", "WSS session: " + e.getMessage());
+                } finally {
+                    if (WssHolder.get() == wssClient) WssHolder.clear();
+                }
+            }
         });
         wssThread.start();
 
-        while (wssThread.isAlive() && System.currentTimeMillis() < windowEnd[0]
-                && polling && System.currentTimeMillis() <= watchUntil) {
+        while (wssThread.isAlive() && polling
+                && System.currentTimeMillis() <= watchUntil) {
             try { Thread.sleep(500); } catch (InterruptedException e) { break; }
         }
 
         wssClient.stop();
         try { wssThread.join(2000); } catch (InterruptedException e) {}
-        return true;
+        return connected[0];
     }
 
     private void broadcastState() {
