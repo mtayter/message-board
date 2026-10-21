@@ -282,11 +282,20 @@ public class RelayService extends Service {
                     b.putExtra(EXTRA_TEXT, spoken);
                     sendBroadcast(b);
 
-                    dispatchMediaKey(KeyEvent.KEYCODE_MEDIA_PAUSE);
+                    // Duck only if something is actually playing. An
+                    // unconditional MEDIA_PLAY after speaking starts the
+                    // default media app (e.g. Spotify) even from silence.
+                    AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+                    final boolean wasMusicActive = am != null && am.isMusicActive();
+                    if (wasMusicActive) {
+                        dispatchMediaKey(KeyEvent.KEYCODE_MEDIA_PAUSE);
+                    }
                     TtsHelper tts = TtsHelper.get(RelayService.this);
                     tts.speak(spoken, new Runnable() {
                         @Override public void run() {
-                            dispatchMediaKey(KeyEvent.KEYCODE_MEDIA_PLAY);
+                            if (wasMusicActive) {
+                                dispatchMediaKey(KeyEvent.KEYCODE_MEDIA_PLAY);
+                            }
                         }
                     });
 
