@@ -89,8 +89,10 @@ always the authenticated user.
   token and the `since` cursor from `LAST_FILE`. If the backlog holds
   messages, it prints one JSON payload
   (`{"board_url", "messages": [...], "via": "board-listener"}`) and
-  exits. If the backlog is empty, it waits for a live push (up to 2
-  hours) and prints it the same way, then exits. Exiting — rather than
+  exits. If the backlog is empty, it waits for a live push indefinitely
+  (no timeout cap since 2026-10-24; dead peers are caught by the
+  websockets 20s ping / 20s pong keepalive, which raises and exits)
+  and prints it the same way, then exits. Exiting — rather than
   running forever — keeps the owning side chat in context.
 - **Respawn (canonical).** The side chat spawns `board-listen.py`
   (backgrounded) and respawns it each time it exits after delivering

@@ -138,27 +138,27 @@ async def listen():
                         write_last(msg.get("id", since))
                     return  # Got messages, exit
 
-            # No backlog messages — wait for live messages (up to 2 hours,
-            # matching the VM replacement interval). The hook's VM
-            # detection will respawn us after a replacement; this
-            # timeout is just a safety net.
-            try:
-                while True:
-                    raw = await asyncio.wait_for(ws.recv(), timeout=7200)
-                    data = json.loads(raw)
-                    if data.get("type") == "message":
-                        msg = {k: v for k, v in data.items() if k != "type"}
-                        payload = {
-                            "board_url": BOARD_URL,
-                            "messages": [msg],
-                            "via": "board-listener",
-                        }
-                        print(json.dumps(payload), flush=True)
-                        write_last(msg.get("id", since))
-                        return  # Got a live message, exit
-                    # Ignore other types (e.g., backlog already handled)
-            except asyncio.TimeoutError:
-                return  # No live messages in 2h, exit empty
+            # No backlog messages — wait for live messages indefinitely.
+            # Dead peers are caught by the websockets keepalive (20s ping /
+            # 20s pong timeout): a dead connection raises, the outer
+            # handler exits, and the owning side chat respawns us. The
+            # hook's VM detection respawns us after a replacement.
+            # (The old 2h cap was removed 2026-10-24: it only bought a
+            # respawn turn every 2h with no board activity.)
+            while True:
+                raw = await ws.recv()
+                data = json.loads(raw)
+                if data.get("type") == "message":
+                    msg = {k: v for k, v in data.items() if k != "type"}
+                    payload = {
+                        "board_url": BOARD_URL,
+                        "messages": [msg],
+                        "via": "board-listener",
+                    }
+                    print(json.dumps(payload), flush=True)
+                    write_last(msg.get("id", since))
+                    return  # Got a live message, exit
+                # Ignore other types (e.g., backlog already handled)
 
     except Exception:
         # Don't print errors for empty exits; just return
