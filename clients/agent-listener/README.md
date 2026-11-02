@@ -47,6 +47,21 @@ curl -X POST https://<your-host>/board/login \
 Save the token to the `TOKEN_FILE` path (mode `0600`). It is read from
 its file and never printed or logged.
 
+Tokens expire (server TTL ~30 days). Both listeners self-heal: if the
+server answers the hello with `{"type": "error", "code": "auth_failed"}`
+and `CREDS_FILE` is set in the config (a path to a 0600 JSON file
+`{"username", "password"}` — the config itself never holds a password),
+the listener re-logins once, stores the fresh token in `TOKEN_FILE`
+(and in the legacy `~/hooks/state/message-board.token` mirror if that
+file exists), and retries the hello once. Login attempts are
+cooldown-stamped (10 minutes, `<TOKEN_FILE>.lastlogin`) so a persistent
+auth failure cannot turn a respawn cycle into a login hammer.
+
+`board-listen-file.py` is the file-output variant used by the
+listener-handler design: instead of printing messages, it writes each
+message TO the agent as `~/message-board-messages/<id>.json` and prints
+only the literal word `message`. Same config, same auth behaviour.
+
 ### Messages
 
 **Hello (authenticate + get backlog):**

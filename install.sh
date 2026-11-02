@@ -81,8 +81,8 @@ if [ "$ROLE" = "agent-listener" ]; then
     DEST="$HOME/.local/share/message-board"
     mkdir -p "$DEST/state"
     chmod 700 "$DEST" "$DEST/state"
-    cp "$SRC/board-listen.py" "$SRC/board-send.py" "$DEST/"
-    chmod 755 "$DEST/board-listen.py" "$DEST/board-send.py"
+    cp "$SRC/board-listen.py" "$SRC/board-listen-file.py" "$SRC/board-send.py" "$DEST/"
+    chmod 755 "$DEST/board-listen.py" "$DEST/board-listen-file.py" "$DEST/board-send.py"
     echo "Installed listener scripts to $DEST"
     LCONFIG="${MB_LISTENER_CONFIG:-$HOME/.config/message-board/agent-listener.env}"
     if [ -f "$LCONFIG" ]; then
